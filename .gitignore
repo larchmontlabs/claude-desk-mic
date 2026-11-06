@@ -1,0 +1,6 @@
+__pycache__/
+.pytest_cache/
+.claude-plugin/types/
+*.log
+.superpowers/
+.venv-dev/

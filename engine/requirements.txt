@@ -1,0 +1,6 @@
+deepgram-sdk>=3.5,<4
+sounddevice>=0.4.6
+numpy>=1.26
+psutil>=5.9
+pynput>=1.7
+edge-tts>=6.1.9

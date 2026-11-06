@@ -1,0 +1,88 @@
+{
+  "name": "desk-mic",
+  "version": "0.2.0",
+  "description": "Talk to Claude from your computer's microphone: /mic puts what you say in the prompt box (or sends it), and can speak replies back.",
+  "license": "MIT",
+  "userConfig": {
+    "engine": {
+      "type": "string",
+      "title": "Speech engine",
+      "description": "deepgram (cloud, needs an API key) or whisper (runs on this computer)",
+      "options": ["deepgram", "whisper"],
+      "default": "deepgram"
+    },
+    "deepgramApiKey": {
+      "type": "string",
+      "title": "Deepgram API key",
+      "description": "Only needed for the deepgram engine",
+      "sensitive": true,
+      "required": false
+    },
+    "whisperModel": {
+      "type": "string",
+      "title": "Whisper model",
+      "description": "Model size for the whisper engine",
+      "options": ["tiny.en", "base.en", "small.en", "medium.en"],
+      "default": "base.en"
+    },
+    "vadLevel": {
+      "type": "number",
+      "title": "Whisper voice-detection level",
+      "description": "0 to 3; higher ignores more background noise",
+      "min": 0,
+      "max": 3,
+      "default": 2
+    },
+    "sendMode": {
+      "type": "string",
+      "title": "How a sentence is sent",
+      "description": "word: build the prompt until you say a send word. pause: send each sentence when you pause.",
+      "options": ["word", "pause"],
+      "default": "word"
+    },
+    "sendWords": {
+      "type": "string",
+      "title": "Send words",
+      "description": "Comma-separated words that send the prompt",
+      "default": "send it"
+    },
+    "useWakeWord": {
+      "type": "boolean",
+      "title": "Use a wake word",
+      "description": "Only act on speech that starts with the wake word",
+      "default": true
+    },
+    "wakeWords": {
+      "type": "string",
+      "title": "Wake words",
+      "description": "Comma-separated wake words",
+      "default": "claude"
+    },
+    "pauseSeconds": {
+      "type": "number",
+      "title": "Pause length (seconds)",
+      "description": "Quiet time that ends a sentence (minimum 1; deepgram accepts 1 to 5)",
+      "min": 1,
+      "default": 3
+    },
+    "speakBack": {
+      "type": "boolean",
+      "title": "Speak replies back",
+      "description": "Read Claude's replies aloud while the mic is on",
+      "default": false
+    },
+    "voice": {
+      "type": "string",
+      "title": "Voice",
+      "description": "edge-tts voice name",
+      "default": "en-US-AriaNeural"
+    },
+    "muteKey": {
+      "type": "string",
+      "title": "Mute key",
+      "description": "auto = Right Ctrl on Windows, Right Option on Mac",
+      "options": ["auto", "right ctrl", "left ctrl", "right alt", "right shift", "f13"],
+      "default": "auto"
+    }
+  }
+}

@@ -1,0 +1,7 @@
+{
+  "name": "claude-desk-mic",
+  "owner": { "name": "Ryan Galea" },
+  "plugins": [
+    { "name": "desk-mic", "source": "./", "description": "Talk to Claude from your computer's microphone." }
+  ]
+}
