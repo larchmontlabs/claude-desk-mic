@@ -90,7 +90,7 @@ class WhisperSTT:
         if self._model is None:
             self._on_loading(self._model_name)
             self._model = await asyncio.to_thread(
-                WhisperModel, self._model_name, compute_type="int8"
+                WhisperModel, self._model_name, device="cpu", compute_type="int8"
             )
         self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="whisper")
         self._worker = asyncio.create_task(self._run())

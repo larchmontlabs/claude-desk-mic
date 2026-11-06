@@ -71,7 +71,10 @@ class FakeModel:
     prompts = []
     audios = []
 
-    def __init__(self, name, compute_type=None):
+    kwargs = []
+
+    def __init__(self, name, compute_type=None, device=None):
+        FakeModel.kwargs.append({"device": device, "compute_type": compute_type})
         FakeModel.instances += 1
         self.name = name
 
@@ -284,3 +287,14 @@ def test_finish_flushes_pending_speech():
         return got
 
     assert asyncio.run(run()) == [("hello", None)]
+
+
+def test_model_loads_on_cpu_int8():
+    async def run():
+        stt, _, _ = make()
+        await stt.start()
+        await stt.finish()
+
+    FakeModel.kwargs = []
+    asyncio.run(run())
+    assert FakeModel.kwargs == [{"device": "cpu", "compute_type": "int8"}]
