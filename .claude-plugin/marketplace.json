@@ -1,7 +1,13 @@
 {
   "name": "claude-desk-mic",
   "owner": { "name": "Ryan Galea" },
+  "metadata": { "description": "desk-mic: talk to Claude Code from your computer's microphone." },
   "plugins": [
-    { "name": "desk-mic", "source": "./", "description": "Talk to Claude from your computer's microphone." }
+    {
+      "name": "desk-mic",
+      "source": "./",
+      "description": "Talk to Claude from your computer's microphone.",
+      "author": { "name": "Ryan Galea" }
+    }
   ]
 }

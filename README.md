@@ -2,22 +2,41 @@
 
 Talk to Claude from your computer's microphone. `/mic` turns the mic on and off, puts what you say in the prompt box (or sends it), and can read Claude's replies back to you. Works on Windows 10/11 and macOS 13+. Speech comes from Deepgram (cloud) or a local Whisper model.
 
+## Before you install
+
+- Python 3.10 or newer must be installed. On first `/mic`, desk-mic builds its own Python environment in `~/.claude-desk-mic/venv` and installs its packages there.
+- On Windows the natural voice needs `ffplay` (part of ffmpeg) on your PATH. Without it, replies are read with the Windows system voice. On macOS the natural voice plays through the built-in `afplay`.
+
 ## Install
 
+From a terminal:
+
 ```
-/plugin install desk-mic --marketplace ryangalea23/claude-desk-mic
+claude plugin marketplace add ryangalea23/claude-desk-mic
+claude plugin install desk-mic@claude-desk-mic
+```
+
+Or inside Claude Code:
+
+```
+/plugin marketplace add ryangalea23/claude-desk-mic
+/plugin install desk-mic@claude-desk-mic
 ```
 
 All settings are on the install screen and in `/config`. `/mic` takes only `on`, `off`, `status`, or nothing (toggle).
 
+## Privacy
+
+With the `deepgram` engine, desk-mic streams your mic audio to Deepgram's cloud while the mic is on. That is all audio, not only the sentences that start with the wake word. Muting stops it. The `whisper` engine keeps all audio on this computer.
+
 
 ## How it works
 
-Say "Claude, what time is it, send it" and the prompt `what time is it` is sent. The wake word starts a prompt and the send word sends it. Both are settings: turn the wake word off, change either word, or switch to `pause` mode, where each sentence is sent when you stop talking. Say "stop listening" or "mic off" to mute and "start listening" or "mic on" to unmute. A mute key does the same from the keyboard.
+Say "Claude, what time is it, send it" and the prompt `what time is it` is sent. The wake word starts a prompt and the send word sends it. Both are settings: turn the wake word off, change either word, or switch to `pause` mode, where each sentence is sent when you stop talking. To mute, press the mute key, or say "stop listening" or "mic off" on its own, without the wake word in front. A muted mic hears nothing, so it cannot hear you ask it to unmute: press the mute key again, or run `/mic off` and then `/mic on`.
 
 With `speakBack` on, Claude's replies are read aloud while the mic is on. The voice is a natural one from edge-tts, and falls back to the system voice if it cannot be reached. Sending a new prompt stops the reply that is being read.
 
-Dictated prompts queue until Claude is idle. They do not expand `@file` mentions or pasted images.
+Dictated prompts queue until Claude is idle. The prompt box clears as soon as one is sent, so you can dictate the next one while Claude works. If a prompt is not sent, a toast shows its text, and it goes back in the box if the box is empty. Dictated prompts do not expand `@file` mentions or pasted images.
 
 ## Settings
 
@@ -42,7 +61,7 @@ This table is generated from `.claude-plugin/plugin.json` by `python scripts/set
 
 ## Mac notes
 
-**Mac is untested.** The engine and the mod run in CI on macOS, but the live Mac checklist has not been run on a real Mac yet. This note stays until it has.
+**Mac is untested.** The engine's tests run in CI on macOS and Windows. The mod's tests (`claude plugin test .`) are run by hand, not in CI. The live Mac checklist has not been run on a real Mac yet. This note stays until it has.
 
 - Allow Microphone access for your terminal app (System Settings, Privacy and Security, Microphone).
 - Allow Accessibility access for your terminal app too. It is needed only for the mute key (Right Option by default). Without it `/mic` still listens but reports that the mute key is unavailable.
@@ -50,13 +69,19 @@ This table is generated from `.claude-plugin/plugin.json` by `python scripts/set
 
 ## Setting the Deepgram key
 
-The key is a sensitive setting, so it is not a row in `/config`. Set or change it after install with:
+The key is a sensitive setting, so it is not a row in `/config`. Set or change it after install inside Claude Code with:
+
+```
+/plugin configure desk-mic@claude-desk-mic
+```
+
+or from a terminal with:
 
 ```
 claude plugin configure desk-mic@claude-desk-mic
 ```
 
-(add `--values-stdin` to save values from a JSON object on stdin). The command is listed in `claude plugin --help`. The in-app screen path for the key is to be confirmed in the live run; this section will be updated with it.
+(add `--values-stdin` to save values from a JSON object on stdin).
 
 ## Developing
 
