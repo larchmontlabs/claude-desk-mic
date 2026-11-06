@@ -3,8 +3,6 @@ personal paths in shipped code."""
 import re
 from pathlib import Path
 
-import pytest
-
 REPO = Path(__file__).resolve().parents[2]
 BANNED_IMPORT = re.compile(
     r"^\s*(?:import|from)\s+(?:win32\w*|msvcrt|pywinauto|winreg)\b", re.MULTILINE
@@ -25,10 +23,6 @@ def test_no_windows_only_imports_in_engine():
     assert bad == []
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="hooks/register.ts still has the old personal path until Task 8 rewrites it; Task 8 removes this marker",
-)
 def test_no_personal_paths_in_engine_or_hooks():
     bad = []
     for folder in ("engine", "hooks"):

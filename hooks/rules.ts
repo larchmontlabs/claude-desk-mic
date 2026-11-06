@@ -30,7 +30,7 @@ export type MicEvent =
 const DEFAULT_SEND_WORDS = ['send it']
 const DEFAULT_WAKE_WORDS = ['claude']
 // Awake runs out after this much quiet (Ryan, 2026-11-06).
-const AWAKE_FOR_MS = 30000
+export const AWAKE_FOR_MS = 30000
 
 const CLEAR_WORDS = /^\s*(?:clear (?:that|it|the prompt)|scratch that)[.!]?\s*$/i
 
