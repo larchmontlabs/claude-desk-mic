@@ -60,7 +60,17 @@ export async function findPython($: EngineCtx): Promise<PythonInfo | { error: st
     if (!home) {
       return { error: 'desk-mic could not find your home folder: Python reported none and neither USERPROFILE nor HOME is set.' }
     }
-    return { argv, platform, home }
+    // `py -3` is a launcher that exits at once; resolve to the real interpreter so
+    // os.getppid() in later probes is the session's pid, not the launcher's.
+    let resolved = argv
+    try {
+      const exe = await $.process.run([...argv, '-c', 'import sys;print(sys.executable)'])
+      const path = exe.stdout.trim()
+      if (exe.exitCode === 0 && path) resolved = [path]
+    } catch {
+      // keep the original argv
+    }
+    return { argv: resolved, platform, home }
   }
   return { error: NO_PYTHON }
 }

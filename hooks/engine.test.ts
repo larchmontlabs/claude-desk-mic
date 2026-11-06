@@ -51,19 +51,36 @@ test('old python is rejected', async () => {
   expect('error' in (await findPython($))).toBe(true)
 })
 
-test('probe gives platform and home', async () => {
-  const mac = fake(() => probeOut([[3, 12], 'darwin', '/Users/a']))
-  expect(await findPython(mac.$)).toEqual({ argv: ['python3'], platform: 'darwin', home: '/Users/a' })
-  const win = fake((argv) => (argv[0] === 'py' ? probeOut([[3, 11], 'win32', 'C:\\Users\\a']) : fail()))
-  expect(await findPython(win.$)).toEqual({ argv: ['py', '-3'], platform: 'win32', home: 'C:\\Users\\a' })
+const EXE = (argv: readonly string[], exe: string): Run | undefined =>
+  argv.some((a) => a.includes('sys.executable')) ? ok(exe + '\n') : undefined
+
+test('probe gives platform and home, and argv is the resolved interpreter', async () => {
+  const mac = fake((argv) => EXE(argv, '/usr/bin/python3') ?? probeOut([[3, 12], 'darwin', '/Users/a']))
+  expect(await findPython(mac.$)).toEqual({ argv: ['/usr/bin/python3'], platform: 'darwin', home: '/Users/a' })
+})
+
+test('py -3 resolves to the real interpreter, and the lock probe runs with it', async () => {
+  const f = fake(
+    (argv) => {
+      if (argv[0] === 'py') return EXE(argv, 'C:/Py312/python.exe') ?? probeOut([[3, 12], 'win32', 'C:/Users/a'])
+      if (argv.some((a) => a.includes('getppid'))) return ok('4242\n')
+      return argv[0] === 'C:/Py312/python.exe' ? ok() : fail()
+    },
+    REQ,
+  )
+  const py = (await findPython(f.$)) as PythonInfo
+  expect(py.argv).toEqual(['C:/Py312/python.exe'])
+  await ensureEngine(f.$, py, 'deepgram', ROOT)
+  const lockProbe = f.calls.find((c) => c.argv.some((a) => a.includes('getppid')))
+  expect(lockProbe?.argv[0]).toBe('C:/Py312/python.exe')
 })
 
 test('home falls back to the environment', async () => {
-  const a = fake(() => probeOut([[3, 12], 'win32', '']), {}, { USERPROFILE: 'C:\\Users\\a' })
+  const a = fake((argv) => EXE(argv, 'python') ?? probeOut([[3, 12], 'win32', '']), {}, { USERPROFILE: 'C:\\Users\\a' })
   expect(((await findPython(a.$)) as PythonInfo).home).toBe('C:\\Users\\a')
-  const b = fake(() => probeOut([[3, 12], 'darwin', '']), {}, { HOME: '/Users/b' })
+  const b = fake((argv) => EXE(argv, 'python') ?? probeOut([[3, 12], 'darwin', '']), {}, { HOME: '/Users/b' })
   expect(((await findPython(b.$)) as PythonInfo).home).toBe('/Users/b')
-  const c = fake(() => probeOut([[3, 12], 'darwin', '']))
+  const c = fake((argv) => EXE(argv, 'python') ?? probeOut([[3, 12], 'darwin', '']))
   const r = await findPython(c.$)
   expect('error' in r && r.error.includes('USERPROFILE') && r.error.includes('HOME')).toBe(true)
 })
