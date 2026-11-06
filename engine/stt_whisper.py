@@ -84,13 +84,15 @@ class WhisperSTT:
         self._model = None
         self._queue: asyncio.Queue = asyncio.Queue()
         self._worker: asyncio.Task | None = None
-        self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="whisper")
+        self._pool: ThreadPoolExecutor | None = None
 
     async def start(self) -> None:
-        self._on_loading(self._model_name)
-        self._model = await asyncio.to_thread(
-            WhisperModel, self._model_name, compute_type="int8"
-        )
+        if self._model is None:
+            self._on_loading(self._model_name)
+            self._model = await asyncio.to_thread(
+                WhisperModel, self._model_name, compute_type="int8"
+            )
+        self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="whisper")
         self._worker = asyncio.create_task(self._run())
         log.info("Whisper model %s ready", self._model_name)
 
@@ -109,7 +111,9 @@ class WhisperSTT:
         if self._worker is not None:
             await self._worker
             self._worker = None
-        self._pool.shutdown(wait=True)
+        if self._pool is not None:
+            self._pool.shutdown(wait=True)
+            self._pool = None
 
     def _transcribe(self, pcm: bytes) -> str:
         # Runs in the worker thread: transcribe() is lazy, so the segments

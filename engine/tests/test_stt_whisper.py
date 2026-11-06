@@ -252,3 +252,35 @@ def test_segments_are_consumed_in_the_worker_thread(monkeypatch):
     got = asyncio.run(run())
     assert ids["call"] == ids["iter"] != ids["loop"]
     assert got == [("ab", None)]
+
+
+def test_restart_after_finish():
+    loads = []
+
+    async def run():
+        stt, got, _ = make(on_loading=loads.append)
+        flag = [False]
+        _stt_with_speech(stt, flag)
+        for _ in range(2):
+            await stt.start()
+            await _utter(stt, flag)
+            await stt.finish()
+        return got
+
+    got = asyncio.run(run())
+    assert [t for t, _ in got] == ["hello", "hello"]
+    assert FakeModel.instances == 1
+    assert loads == ["base.en"]
+
+
+def test_finish_flushes_pending_speech():
+    async def run():
+        stt, got, _ = make()
+        flag = [True]
+        _stt_with_speech(stt, flag)
+        await stt.start()
+        await stt.send(F * 10)
+        await stt.finish()
+        return got
+
+    assert asyncio.run(run()) == [("hello", None)]
