@@ -73,6 +73,7 @@ type RigOptions = {
   platform?: 'win32' | 'darwin'
   pipHangs?: boolean
   fillBusy?: boolean
+  fillThrows?: boolean
   submit?: (text: string) => Promise<{ text: string }>
 }
 
@@ -121,12 +122,14 @@ function rig(on: On, o: RigOptions = {}) {
   on('session.start', (_, e) => ({ cwd: e.cwd }))
   on('session.end', (_, e) => ({ sessionId: e.sessionId }))
   on('turn.complete', (_, e) => ({ text: e.answer }))
-  on('fs.read', (_, e) => ({ value: r.writes[e.path] ?? 'pkg==1\n' }))
+  // Paths are kept with forward slashes (the engine hands them over with backslashes on Windows).
+  const key = (path: string) => path.replace(/\\/g, '/')
+  on('fs.read', (_, e) => ({ value: r.writes[key(e.path)] ?? 'pkg==1\n' }))
   on('fs.write', (_, e) => {
-    r.writes[e.path] = e.text
+    r.writes[key(e.path)] = e.text
     return { value: undefined }
   })
-  on('fs.exists', (_, e) => ({ value: e.path in r.writes }))
+  on('fs.exists', (_, e) => ({ value: key(e.path) in r.writes }))
   on('process.run', async (_, e) => {
     const argv = e.argv
     r.runs.push(argv)
@@ -143,6 +146,7 @@ function rig(on: On, o: RigOptions = {}) {
   })
   on('prompt.read', () => ({ value: { text: r.draft, cursor: r.draft.length } }))
   on('prompt.fill', (_, e) => {
+    if (o.fillThrows) throw new Error('fill denied by another hook')
     if (o.fillBusy) return { isFilled: false }
     r.draft = e.text
     r.fills.push(e.text)
@@ -329,6 +333,7 @@ test('listener args', { options: { deepgramApiKey: 'secret-key' } }, async ($, o
   const terms = argv.flatMap((a, i) => (a === '--keyterm' ? [argv[i + 1]] : []))
   expect(terms).toEqual(['claude', 'send it'])
   expect(argv.slice(-4)).toEqual(['--keyterm', 'claude', '--keyterm', 'send it'])
+  expect(argPair(argv, '--parent-pid')).toBe('4242')
   expect(r.spawns[0]!.env?.DEEPGRAM_API_KEY).toBe('secret-key')
   expect(argv.some(a => a.includes('secret-key'))).toBe(false)
 })
@@ -522,20 +527,49 @@ test('dictated submit uses asUser', { options: { engine: 'whisper', useWakeWord:
   expect(r.submits[0]!.origin).toMatchObject({ kind: 'plugin', asUser: true })
 })
 
-test('draft is cleared only after submit resolves', { options: { engine: 'whisper', useWakeWord: false } }, async ($, on) => {
+test('the box is cleared as soon as a dictated prompt is sent', { options: { engine: 'whisper', useWakeWord: false } }, async ($, on) => {
   const pending = deferred<{ text: string }>()
   const r = rig(on, { submit: () => pending.promise })
   await begin($)
   await micOn($, r)
   await say(r, UTTER('run the tests'))
-  expect(r.fills).toEqual(['run the tests'])
-  r.listener.push({ line: UTTER('send it') })
-  await until(() => r.submits.length === 1, 'the submit')
-  await drain()
-  expect(r.fills).toEqual(['run the tests'])
-  pending.resolve({ text: 'run the tests' })
-  await until(() => r.fills.length === 2, 'the draft clear')
+  await say(r, UTTER('send it'))
+  expect(r.submits.map(x => x.text)).toEqual(['run the tests'])
   expect(r.fills).toEqual(['run the tests', ''])
+  pending.resolve({ text: 'run the tests' })
+  await drain()
+  expect(r.fills).toEqual(['run the tests', ''])
+})
+
+test('events keep flowing while a dictated submit waits for the turn', { options: { engine: 'whisper', useWakeWord: false } }, async ($, on) => {
+  const pending = deferred<{ text: string }>()
+  const r = rig(on, { submit: () => pending.promise })
+  await begin($)
+  await micOn($, r)
+  // Claude is busy: the submit does not resolve until the turn ends.
+  await say(r, UTTER('run the tests send it'))
+  expect(r.submits.length).toBe(1)
+  // The next prompt can be dictated meanwhile, and the mute key still shows.
+  await say(r, UTTER('then fix the lint'))
+  expect(r.draft).toBe('then fix the lint')
+  await say(r, STATE(false))
+  expect(r.status).toBe('mic muted (Right Ctrl)')
+  pending.resolve({ text: 'run the tests' })
+  await drain()
+  expect(r.draft).toBe('then fix the lint')
+})
+
+test('text typed while a submit waits is left alone', { options: { engine: 'whisper', useWakeWord: false } }, async ($, on) => {
+  const pending = deferred<{ text: string }>()
+  const r = rig(on, { submit: () => pending.promise })
+  await begin($)
+  await micOn($, r)
+  await say(r, UTTER('run the tests'))
+  await say(r, UTTER('send it'))
+  r.draft = 'typed meanwhile'
+  pending.resolve({ text: 'run the tests' })
+  await drain()
+  expect(r.draft).toBe('typed meanwhile')
 })
 
 test('rejected submit keeps the draft', { options: { engine: 'whisper', useWakeWord: false } }, async ($, on) => {
@@ -544,10 +578,35 @@ test('rejected submit keeps the draft', { options: { engine: 'whisper', useWakeW
   await micOn($, r)
   await say(r, UTTER('run the tests'))
   await say(r, UTTER('send it'))
-  expect(r.fills).toEqual(['run the tests'])
   expect(r.draft).toBe('run the tests')
-  expect(r.toasts.some(t => t.includes('run the tests'))).toBe(true)
+  expect(r.toasts.some(t => t.includes('Not sent: run the tests'))).toBe(true)
   expect(await mic($, 'status')).toMatch(/Mic is on/)
+})
+
+test('a rejected submit does not overwrite new text in the box', { options: { engine: 'whisper', useWakeWord: false } }, async ($, on) => {
+  const pending = deferred<{ text: string }>()
+  const r = rig(on, { submit: () => pending.promise })
+  await begin($)
+  await micOn($, r)
+  await say(r, UTTER('run the tests send it'))
+  r.draft = 'typed meanwhile'
+  pending.reject(new Error('dialog closed'))
+  await drain()
+  expect(r.draft).toBe('typed meanwhile')
+  expect(r.toasts.some(t => t.includes('Not sent: run the tests'))).toBe(true)
+})
+
+test('an error while handling an event ends the listener', { options: { engine: 'whisper', useWakeWord: false } }, async ($, on) => {
+  const r = rig(on, { fillThrows: true })
+  await begin($)
+  await micOn($, r)
+  r.listener.push({ line: UTTER('run the tests') })
+  await until(() => r.listener.sawReturn, 'the listener stream to be returned')
+  await drain()
+  expect(r.status).toBe(undefined)
+  expect(r.toasts.some(t => t.startsWith('Mic stopped: desk-mic hit an error'))).toBe(true)
+  expect(r.toasts.some(t => t.includes('could not start'))).toBe(false)
+  expect(await mic($, 'status')).toMatch(/Mic is off/)
 })
 
 test('busy dialog keeps the spoken text', { options: { engine: 'whisper', useWakeWord: false } }, async ($, on) => {
@@ -684,4 +743,31 @@ test('session end stops speech', { options: SPEAK }, async ($, on) => {
   await drain()
   await $.session.end({ reason: 'other', sessionId: 's1' } as never)
   expect(r.runs).toContainEqual(treeKillArgv('win32', 77))
+})
+
+const FLAG = `${HOME.win32}/.claude-desk-mic/speaking`
+
+test('a killed reply clears its speaking flag', { options: SPEAK }, async ($, on) => {
+  const r = rig(on)
+  await begin($)
+  await micOn($, r)
+  await $.turn.complete(turn('a long answer'))
+  await until(() => r.speakers.length === 1, 'the speak spawn')
+  await drain()
+  // The tree kill skips speak.py's own cleanup, so the flag still names it.
+  r.writes[FLAG] = '77'
+  await mic($, 'off')
+  expect(r.writes[FLAG]).toBe('')
+})
+
+test('a flag that names another reply is left alone', { options: SPEAK }, async ($, on) => {
+  const r = rig(on)
+  await begin($)
+  await micOn($, r)
+  await $.turn.complete(turn('a long answer'))
+  await until(() => r.speakers.length === 1, 'the speak spawn')
+  await drain()
+  r.writes[FLAG] = '99'
+  await mic($, 'off')
+  expect(r.writes[FLAG]).toBe('99')
 })

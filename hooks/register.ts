@@ -28,9 +28,9 @@ import {
 //   /mic status          say what it's doing
 
 // Where a user sets or changes the sensitive deepgramApiKey after install
-// (it is not a row in /config). The command exists in `claude plugin --help`;
-// the id form name@marketplace comes from the CLI's own error message.
-export const KEY_HINT = 'run: claude plugin configure desk-mic@claude-desk-mic'
+// (it is not a row in /config): /plugin configure in Claude Code, or the CLI's
+// `claude plugin configure` (both confirmed live, 2026-11-06).
+export const KEY_HINT = '/plugin configure desk-mic@claude-desk-mic'
 
 type Ctx = EngineInterface
 type Phase = 'off' | 'starting' | 'on'
@@ -151,19 +151,32 @@ function stopSpeech($: Ctx, st: State): { killed: Promise<void>; done: Promise<v
   if (!s) return { killed: Promise.resolve(), done: Promise.resolve() }
   st.speech = undefined
   s.isStopped = true
-  const killed = treeKill($, st.platform, s)
+  const killed = treeKill($, st, s)
   return { killed, done: killed.then(() => s.done) }
 }
 
-async function treeKill($: Ctx, platform: 'win32' | 'darwin', s: Speech): Promise<void> {
+async function treeKill($: Ctx, st: State, s: Speech): Promise<void> {
   if (s.pid !== undefined) {
     try {
-      await $.process.run(treeKillArgv(platform, s.pid), { timeoutMs: KILL_TIMEOUT_MS })
+      await $.process.run(treeKillArgv(st.platform, s.pid), { timeoutMs: KILL_TIMEOUT_MS })
     } catch {
       // already gone
     }
+    await clearSpeakingFlag($, st.stateDir, s.pid)
   }
   void s.stream.return(undefined as never).catch(() => undefined)
+}
+
+/** A killed speak.py (taskkill /F on Windows) never removes its speaking flag.
+ *  Empty it, but only while it still names the reply we killed, so a newer
+ *  reply's flag is never wiped. An empty flag reads as "not speaking". */
+async function clearSpeakingFlag($: Ctx, stateDir: string, pid: number): Promise<void> {
+  const flag = `${stateDir}/speaking`
+  try {
+    if ((await $.fs.read(flag)).trim() === String(pid)) await $.fs.write(flag, '')
+  } catch {
+    // no flag: nothing to clear
+  }
 }
 
 /** Reads a reply aloud; a reply still playing is stopped first. Runs in the
@@ -197,12 +210,16 @@ async function speak($: Ctx, st: State, answer: string): Promise<void> {
   finish()
 }
 
-/** The start failed or the listener died: say why and go back to off. */
+/** The start failed, the listener died, or handling one of its events threw:
+ *  end the listener (so the mic is never left open with nothing reading it),
+ *  say why and go back to off. */
 function failed($: Ctx, st: State, myRun: number, why: string): void {
   if (myRun !== st.run) return
   st.run++
   st.phase = 'off'
+  const child = st.listener
   st.listener = undefined
+  if (child) void child.return(undefined as never).catch(() => undefined)
   $.ui.status(undefined)
   $.ui.toast(`Mic stopped: ${why}`)
   void stopSpeech($, st).killed
@@ -225,21 +242,14 @@ async function onUtterance($: Ctx, st: State, text: string): Promise<void> {
     await $.prompt.fill({ text: '', mode: 'replace' })
   } else if (action.kind === 'submit') {
     st.awake = plan.awake
-    let isSent = false
-    try {
-      const result = await $.prompt.submit({ text: action.text, asUser: true })
-      isSent = result.drop === undefined
-    } catch {
-      isSent = false
+    // A plugin prompt waits until the session is idle, which can take a whole
+    // turn. Never wait on it here: the listener's events must keep flowing.
+    void submitted($, st, action.text)
+    // The text now belongs to the submit, so free the box for the next prompt,
+    // but only if it still holds what was read (what the mic put there).
+    if (box.text.trim() !== '' && (await $.prompt.read()).text === box.text) {
+      await $.prompt.fill({ text: '', mode: 'replace' })
     }
-    if (!isSent) {
-      $.ui.toast(`Not sent: ${action.text}`)
-      return
-    }
-    // A mod's own $.prompt.submit does not pass through its own prompt.submit
-    // hook (seen under `claude plugin test`), so stop speech here as well.
-    await stopSpeech($, st).killed
-    if (box.text.trim() !== '') await $.prompt.fill({ text: '', mode: 'replace' })
   } else {
     st.awake = plan.awake
   }
@@ -247,6 +257,30 @@ async function onUtterance($: Ctx, st: State, text: string): Promise<void> {
     // Refresh once the awake stretch runs out, so the status asks for the wake word again.
     st.awakeTimer?.cancel()
     st.awakeTimer = $.clock.after(AWAKE_FOR_MS + 1, () => void refresh($, st))
+  }
+}
+
+/** Sends a dictated prompt and deals with the result whenever it comes. */
+async function submitted($: Ctx, st: State, text: string): Promise<void> {
+  let isSent = false
+  try {
+    const result = await $.prompt.submit({ text, asUser: true })
+    isSent = result.drop === undefined
+  } catch {
+    isSent = false
+  }
+  try {
+    if (isSent) {
+      // A mod's own $.prompt.submit does not pass through its own prompt.submit
+      // hook (seen under `claude plugin test`), so stop speech here as well.
+      await stopSpeech($, st).killed
+      return
+    }
+    $.ui.toast(`Not sent: ${text}`)
+    // Keep the draft: put it back, unless something new is in the box by now.
+    if ((await $.prompt.read()).text.trim() === '') await $.prompt.fill({ text, mode: 'replace' })
+  } catch (err) {
+    $.ui.log(`desk-mic: after a dictated submit: ${String(err)}`, { to: 'debug' })
   }
 }
 
@@ -317,6 +351,8 @@ async function start($: Ctx, st: State, myRun: number, pauseMs: number): Promise
     cfg.muteKey,
     '--vad-level',
     String(cfg.vadLevel),
+    '--parent-pid',
+    String(py.sessionPid),
     ...(cfg.engine === 'whisper' ? ['--model', cfg.whisperModel] : []),
     ...keyterms(cfg.rules).flatMap(term => ['--keyterm', term]),
   ]
@@ -344,7 +380,12 @@ async function start($: Ctx, st: State, myRun: number, pauseMs: number): Promise
       out = split.rest
       for (const line of split.lines) {
         const event = parseEvent(line)
-        if (event) await handle($, st, myRun, event)
+        if (!event) continue
+        try {
+          await handle($, st, myRun, event)
+        } catch (err) {
+          return failed($, st, myRun, `desk-mic hit an error and turned the mic off: ${String(err)}`)
+        }
       }
     }
   } catch (err) {
@@ -394,7 +435,7 @@ async function micCommand($: Ctx, st: State, args: string): Promise<string> {
   if (st.phase === 'on') return 'Mic is already on.'
   if (st.phase === 'starting') return 'Mic is already starting.'
   if (cfg.engine === 'deepgram' && cfg.apiKey === '') {
-    return `Set your Deepgram key (${KEY_HINT}), or switch engine to whisper.`
+    return `Set your Deepgram key with ${KEY_HINT}, or switch engine to whisper.`
   }
   // Checked before anything is spawned or installed.
   const pause = pauseMsFor(cfg.engine, cfg.pauseSeconds)
