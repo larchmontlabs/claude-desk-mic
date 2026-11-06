@@ -184,3 +184,32 @@ def test_a_requested_close_is_not_reported():
 
     run(go())
     assert conn.finished and h.closed == []
+
+
+def test_close_reason_carries_the_last_error():
+    from deepgram import LiveTranscriptionEvents as E
+
+    h = Harness()
+    conn = FakeConn()
+    h.stt._wire(conn)
+    h.stt._conn = conn
+
+    async def go():
+        await conn.handlers[E.Error](conn, "bad auth")
+        await conn.handlers[E.Close](conn, '{"type": "Close"}')
+
+    run(go())
+    assert len(h.closed) == 1 and "bad auth" in h.closed[0]
+
+
+def test_flushed_interim_words_are_not_sent_again_by_the_final():
+    h = Harness()
+
+    async def go():
+        await h.stt.handle_transcript(result([("hello", 0.0, 0.6)], 0.8, final=False))
+        await h.stt.handle_utterance_end(NS(last_word_end=0.6))
+        await h.stt.handle_transcript(result([("hello", 0.0, 0.6), ("next", 0.7, 0.9)], 0.9))
+        await h.stt.handle_utterance_end(NS(last_word_end=0.9))
+
+    run(go())
+    assert [t for t, _ in h.calls] == ["hello", "next"]

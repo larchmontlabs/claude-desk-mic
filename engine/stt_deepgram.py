@@ -82,6 +82,8 @@ class DeepgramSTT:
         self._finishing = False
         # Pending words: dicts with start, end, text, confidence, final.
         self._words: list[dict] = []
+        self._flushed_to = -1.0  # end time of the last word already sent
+        self._last_error = ""
 
     async def handle_transcript(self, result) -> None:
         """One Deepgram Transcript event. A final result replaces any pending
@@ -101,6 +103,7 @@ class DeepgramSTT:
                 }
                 for w in (alt.words or [])
             ]
+            new = [w for w in new if w["end"] > self._flushed_to]
             if not new:
                 return
             span_end = max(w["end"] for w in new)
@@ -125,6 +128,7 @@ class DeepgramSTT:
         if not flushed:
             return
         self._words = [w for w in self._words if w["end"] > last_word_end]
+        self._flushed_to = max(self._flushed_to, max(w["end"] for w in flushed))
         text = " ".join(w["text"] for w in flushed).strip()
         if not text:
             return
@@ -137,7 +141,8 @@ class DeepgramSTT:
         if self._finishing:
             return
         self._finishing = True  # report once
-        await self._on_closed(str(reason) or "closed")
+        # The SDK reports the real cause in Error; the Close payload has none.
+        await self._on_closed(self._last_error or str(reason) or "closed")
 
     def _wire(self, conn) -> None:
         async def _on_message(self_conn, result, **kwargs):
@@ -151,6 +156,7 @@ class DeepgramSTT:
 
         async def _on_error(self_conn, error, **kwargs):
             log.warning("Deepgram error: %s", error)
+            self._last_error = str(error)
 
         conn.on(LiveTranscriptionEvents.Transcript, _on_message)
         conn.on(LiveTranscriptionEvents.UtteranceEnd, _on_utterance_end)
