@@ -110,10 +110,30 @@ def test_stale_guard_is_taken_over(tmp_path):
     Path(str(lock) + ".guard").write_text("4242")
     core.claim_mic(
         lock, my_pid=777, is_listener=lambda pid: False, kill=lambda pid: None,
-        wait_gone=_gone, pid_alive=lambda pid: False,
+        wait_gone=_gone, guard_owner_alive=lambda pid: False,
     )
     assert lock.read_text() == "777"
     assert not Path(str(lock) + ".guard").exists()
+
+
+def test_guard_held_by_a_reused_pid_is_taken_over(tmp_path):
+    """A listener killed while it held the guard leaves the file behind; if its
+    pid now belongs to another program the next claim must not wait forever."""
+    import threading
+
+    lock = tmp_path / "listen.pid"
+    Path(str(lock) + ".guard").write_text(str(os.getpid()))  # alive, but not a listener
+    done = []
+    worker = threading.Thread(
+        target=lambda: done.append(
+            core.claim_mic(lock, my_pid=777, is_listener=lambda pid: False, kill=lambda pid: None, wait_gone=_gone)
+        ),
+        daemon=True,
+    )
+    worker.start()
+    worker.join(5)
+    assert done == [None]
+    assert lock.read_text() == "777"
 
 
 def test_claim_checks_for_listen_py(monkeypatch):
@@ -286,16 +306,56 @@ def test_takeover_gives_up_after_5_seconds(tmp_path):
 def test_stale_speaking_flag_is_ignored(tmp_path):
     flag = tmp_path / "speaking"
     flag.write_text("4242")
-    assert core.is_speaking(flag, pid_alive=lambda p: False) is False
+    assert core.is_speaking(flag, is_speaker=lambda p: False) is False
 
 
 def test_live_speaking_flag_counts(tmp_path):
     flag = tmp_path / "speaking"
-    assert core.is_speaking(flag, pid_alive=lambda p: True) is False
+    assert core.is_speaking(flag, is_speaker=lambda p: True) is False
     flag.write_text("4242")
-    assert core.is_speaking(flag, pid_alive=lambda p: True) is True
+    assert core.is_speaking(flag, is_speaker=lambda p: True) is True
     flag.write_text("not a pid")
-    assert core.is_speaking(flag, pid_alive=lambda p: True) is False
+    assert core.is_speaking(flag, is_speaker=lambda p: True) is False
+    flag.write_text("")
+    assert core.is_speaking(flag, is_speaker=lambda p: True) is False
+
+
+def test_speaking_flag_naming_another_live_process_is_ignored(tmp_path):
+    """Windows reuses pids fast: a stale flag whose pid now belongs to some
+    other program (here: this test run) must not deafen the mic."""
+    flag = tmp_path / "speaking"
+    flag.write_text(str(os.getpid()))
+    assert core.is_speaking(flag) is False
+
+
+SPEAKER = textwrap.dedent(
+    """
+    import os, time
+    from pathlib import Path
+    Path({flag!r}).write_text(str(os.getpid()))
+    time.sleep(60)
+    """
+)
+
+
+def test_speaking_flag_of_a_real_speak_py_counts(tmp_path):
+    """The flag holds speak.py's own pid (the inner interpreter when a venv
+    python.exe is a launcher); that process must be recognised."""
+    flag = tmp_path / "speaking"
+    proc = _spawn(tmp_path / "s", "speak.py", SPEAKER.format(flag=str(flag)))
+    try:
+        for _ in range(200):
+            if flag.exists() and flag.read_text().strip():
+                break
+            time.sleep(0.05)
+        assert core.is_speaking(flag) is True
+    finally:
+        _kill_tree(proc)
+    for _ in range(100):  # the kill lands a moment later
+        if not core.is_speaking(flag):
+            break
+        time.sleep(0.05)
+    assert core.is_speaking(flag) is False
 
 
 # -- MicState ----------------------------------------------------------------

@@ -68,16 +68,36 @@ class TakeoverTimeout(Exception):
         self.pid = pid
 
 
+def _runs_script(proc: "psutil.Process", script: str) -> bool:
+    """True if `proc` runs a script named exactly `script` (guards against pid reuse)."""
+    return any(part.replace("\\", "/").rsplit("/", 1)[-1] == script for part in proc.cmdline())
+
+
+def _is_live(proc: "psutil.Process") -> bool:
+    """Still the same running process: not exited, not a later reuse of its pid, not a zombie."""
+    try:
+        return proc.is_running() and proc.status() != psutil.STATUS_ZOMBIE
+    except psutil.Error:
+        return False
+
+
 def is_listener(pid: int) -> bool:
     """True only for a live process running a script named exactly listen.py
     (guards against pid reuse)."""
     try:
-        proc = psutil.Process(pid)
-        return any(
-            part.replace("\\", "/").rsplit("/", 1)[-1] == "listen.py" for part in proc.cmdline()
-        )
+        return _runs_script(psutil.Process(pid), "listen.py")
     except (psutil.Error, OSError):
         return False
+
+
+def process_watch(pid: int):
+    """A check that stays True while the process that has `pid` now is running.
+    A later process given the same pid does not count."""
+    try:
+        proc = psutil.Process(pid)
+    except (psutil.Error, OSError):
+        return lambda: False
+    return lambda: _is_live(proc)
 
 
 def _kill_pid(pid: int) -> None:
@@ -114,10 +134,11 @@ def _read_pid(path: Path) -> int | None:
         return None
 
 
-def _acquire_guard(guard: Path, my_pid: int, pid_alive) -> None:
+def _acquire_guard(guard: Path, my_pid: int, owner_alive) -> None:
     """Take the guard file. The pid is written before the file appears (temp
     file + hard link), so a reader never sees an empty guard. A guard whose
-    owner is dead is stale and is taken over."""
+    owner is no longer a running listener (dead, or its pid reused by another
+    program) is stale and is taken over."""
     guard.parent.mkdir(parents=True, exist_ok=True)
     tmp = guard.with_name(f"{guard.name}.{my_pid}.tmp")
     tmp.write_text(str(my_pid))
@@ -129,7 +150,7 @@ def _acquire_guard(guard: Path, my_pid: int, pid_alive) -> None:
             except FileExistsError:
                 pass
             owner = _read_pid(guard)
-            if owner is None or owner == my_pid or not pid_alive(owner):
+            if owner is None or owner == my_pid or not owner_alive(owner):
                 # Stale. Re-read just before removing, to narrow the window in
                 # which two claimants both clear the same stale guard.
                 if _read_pid(guard) == owner:
@@ -162,7 +183,7 @@ def claim_mic(
     wait_gone=_wait_gone,
     clock=time.monotonic,
     wait_s: float = 5,
-    pid_alive=psutil.pid_exists,
+    guard_owner_alive=is_listener,
 ) -> int | None:
     """Take the mic: stop the listener named in `lock` (if it still is one),
     wait until it is gone, then write our pid. Returns the pid that was
@@ -174,7 +195,7 @@ def claim_mic(
     """
     lock = Path(lock)
     guard = Path(str(lock) + ".guard")
-    _acquire_guard(guard, my_pid, pid_alive)
+    _acquire_guard(guard, my_pid, guard_owner_alive)
     try:
         previous = None
         old = _read_pid(lock)
@@ -201,12 +222,40 @@ def release_mic(lock: Path, my_pid: int) -> None:
 
 # -- Speaking flag ---------------------------------------------------------------
 
-def is_speaking(flag: Path, pid_alive=psutil.pid_exists) -> bool:
-    """True when the flag file names a live pid (the speak-back process)."""
+class _SpeakerCheck:
+    """Is `pid` a running speak.py? Called from the audio callback, so the
+    command line is read once per pid; after that only liveness is checked."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._pid: int | None = None
+        self._proc: "psutil.Process | None" = None
+
+    def __call__(self, pid: int) -> bool:
+        with self._lock:
+            if pid != self._pid:
+                self._pid, self._proc = pid, None
+                try:
+                    proc = psutil.Process(pid)
+                    if _runs_script(proc, "speak.py"):
+                        self._proc = proc
+                except (psutil.Error, OSError):
+                    pass
+            proc = self._proc
+        return proc is not None and _is_live(proc)
+
+
+_is_speaker = _SpeakerCheck()
+
+
+def is_speaking(flag: Path, is_speaker=_is_speaker) -> bool:
+    """True when the flag file names a running speak.py. A stale flag (speak.py
+    killed before it could remove it) whose pid now belongs to another program
+    does not count, so it can never deafen the mic."""
     pid = _read_pid(Path(flag))
     if pid is None or pid <= 0:
         return False
-    return bool(pid_alive(pid))
+    return bool(is_speaker(pid))
 
 
 # -- Mic state, shared across threads ----------------------------------------------
