@@ -17,7 +17,9 @@ export type EngineCtx = {
   ui: { status: (text: string | undefined) => void }
 }
 
-export type PythonInfo = { argv: string[]; platform: 'win32' | 'darwin'; home: string }
+// sessionPid: the Claude Code process, learned as the resolved interpreter's
+// parent. listen.py gets it as --parent-pid and stops when it is gone.
+export type PythonInfo = { argv: string[]; platform: 'win32' | 'darwin'; home: string; sessionPid: number }
 
 // The API's documented maximum for $.process.run; used for venv creation and each pip run.
 const TEN_MINUTES = 600000
@@ -25,6 +27,11 @@ const MIN_PYTHON: [number, number] = [3, 10]
 const CANDIDATES: string[][] = [['python3'], ['python'], ['py', '-3']]
 const PROBE =
   'import sys,pathlib,json; print(json.dumps([list(sys.version_info[:2]), sys.platform, str(pathlib.Path.home())]))'
+// The real interpreter. A venv python.exe on Windows is a launcher that runs the
+// base interpreter as its own child, so a probe run through it would report the
+// launcher as its parent; resolve to the base interpreter instead.
+export const RESOLVE =
+  'import sys; print(getattr(sys, "_base_executable", None) or sys.executable if sys.platform == "win32" and sys.prefix != sys.base_prefix else sys.executable)'
 const NO_PYTHON =
   'desk-mic needs Python 3.10 or newer, and none was found. Install it from https://www.python.org/downloads/ and run /mic again.'
 
@@ -64,13 +71,23 @@ export async function findPython($: EngineCtx): Promise<PythonInfo | { error: st
     // os.getppid() in later probes is the session's pid, not the launcher's.
     let resolved = argv
     try {
-      const exe = await $.process.run([...argv, '-c', 'import sys;print(sys.executable)'])
+      const exe = await $.process.run([...argv, '-c', RESOLVE])
       const path = exe.stdout.trim()
       if (exe.exitCode === 0 && path) resolved = [path]
     } catch {
       // keep the original argv
     }
-    return { argv: resolved, platform, home }
+    let sessionPid = NaN
+    try {
+      const r = await $.process.run([...resolved, '-c', 'import os; print(os.getppid())'])
+      if (r.exitCode === 0) sessionPid = Number(r.stdout.trim())
+    } catch {
+      // handled below
+    }
+    if (!Number.isInteger(sessionPid) || sessionPid <= 0) {
+      return { error: 'desk-mic could not find the Claude Code process to watch, so it will not start the mic.' }
+    }
+    return { argv: resolved, platform, home, sessionPid }
   }
   return { error: NO_PYTHON }
 }

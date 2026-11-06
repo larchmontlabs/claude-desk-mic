@@ -54,9 +54,30 @@ test('old python is rejected', async () => {
 const EXE = (argv: readonly string[], exe: string): Run | undefined =>
   argv.some((a) => a.includes('sys.executable')) ? ok(exe + '\n') : undefined
 
+const PPID = (argv: readonly string[], pid: string): Run | undefined =>
+  argv.some((a) => a.includes('getppid')) ? ok(pid + '\n') : undefined
+
 test('probe gives platform and home, and argv is the resolved interpreter', async () => {
-  const mac = fake((argv) => EXE(argv, '/usr/bin/python3') ?? probeOut([[3, 12], 'darwin', '/Users/a']))
-  expect(await findPython(mac.$)).toEqual({ argv: ['/usr/bin/python3'], platform: 'darwin', home: '/Users/a' })
+  const mac = fake((argv) => PPID(argv, '4242') ?? EXE(argv, '/usr/bin/python3') ?? probeOut([[3, 12], 'darwin', '/Users/a']))
+  expect(await findPython(mac.$)).toEqual({ argv: ['/usr/bin/python3'], platform: 'darwin', home: '/Users/a', sessionPid: 4242 })
+})
+
+test('the session pid is learned with the resolved interpreter, not a launcher', async () => {
+  const f = fake((argv) => {
+    if (argv[0] === 'py') return EXE(argv, 'C:/Py312/python.exe') ?? probeOut([[3, 12], 'win32', 'C:/Users/a'])
+    if (argv[0] === 'C:/Py312/python.exe') return PPID(argv, '4242') ?? fail()
+    return fail()
+  })
+  const py = (await findPython(f.$)) as PythonInfo
+  expect(py.sessionPid).toBe(4242)
+  const probe = f.calls.find((c) => c.argv.some((a) => a.includes('getppid')))
+  expect(probe?.argv[0]).toBe('C:/Py312/python.exe')
+})
+
+test('no session pid stops the start with a reason', async () => {
+  const f = fake((argv) => PPID(argv, 'nope') ?? EXE(argv, '/usr/bin/python3') ?? probeOut([[3, 12], 'darwin', '/Users/a']))
+  const r = await findPython(f.$)
+  expect('error' in r && r.error.includes('Claude Code')).toBe(true)
 })
 
 test('py -3 resolves to the real interpreter, and the lock probe runs with it', async () => {
@@ -76,9 +97,9 @@ test('py -3 resolves to the real interpreter, and the lock probe runs with it', 
 })
 
 test('home falls back to the environment', async () => {
-  const a = fake((argv) => EXE(argv, 'python') ?? probeOut([[3, 12], 'win32', '']), {}, { USERPROFILE: 'C:\\Users\\a' })
+  const a = fake((argv) => PPID(argv, '4242') ?? EXE(argv, 'python') ?? probeOut([[3, 12], 'win32', '']), {}, { USERPROFILE: 'C:\\Users\\a' })
   expect(((await findPython(a.$)) as PythonInfo).home).toBe('C:\\Users\\a')
-  const b = fake((argv) => EXE(argv, 'python') ?? probeOut([[3, 12], 'darwin', '']), {}, { HOME: '/Users/b' })
+  const b = fake((argv) => PPID(argv, '4242') ?? EXE(argv, 'python') ?? probeOut([[3, 12], 'darwin', '']), {}, { HOME: '/Users/b' })
   expect(((await findPython(b.$)) as PythonInfo).home).toBe('/Users/b')
   const c = fake((argv) => EXE(argv, 'python') ?? probeOut([[3, 12], 'darwin', '']))
   const r = await findPython(c.$)
@@ -87,7 +108,7 @@ test('home falls back to the environment', async () => {
 
 const ROOT = '/plug'
 const REQ = { [`${ROOT}/engine/requirements.txt`]: 'a==1\n', [`${ROOT}/engine/requirements-whisper.txt`]: 'w==1\n' }
-const PY: PythonInfo = { argv: ['python3'], platform: 'darwin', home: '/Users/a' }
+const PY: PythonInfo = { argv: ['python3'], platform: 'darwin', home: '/Users/a', sessionPid: 4242 }
 const VENV = '/Users/a/.claude-desk-mic/venv'
 const LOCK = '/Users/a/.claude-desk-mic/install.lock'
 

@@ -16,6 +16,10 @@ each (hooks/fixtures/listener-events.jsonl holds one of every kind):
 Startup runs in stages, each with its own error: device, mic, model (Whisper)
 or deepgram (Deepgram). A failed stage closes what is open, releases the mic
 lock and exits non-zero. The Deepgram key comes only from DEEPGRAM_API_KEY.
+
+With --parent-pid (the mod passes the Claude Code process), the listener
+checks that process every few seconds and shuts down cleanly once it is gone,
+so a crashed or killed session never leaves the mic recording.
 """
 import argparse
 import asyncio
@@ -43,6 +47,9 @@ MIN_CONFIDENCE = 0.6
 # Deepgram utterance_end_ms accepts 1000-5000 ms (Deepgram utterance-end docs).
 DEEPGRAM_PAUSE_MS = (1000, 5000)
 MIN_PAUSE_MS = 1000
+# How often the owner watch checks Claude Code is still running (final branch review, I4: "every 2 s").
+PARENT_POLL_S = 2.0
+_PARENT_GONE = object()
 
 
 class _LockedOutput(Output):
@@ -117,6 +124,8 @@ class Deps:
     is_speaking: Callable = core.is_speaking
     resolve_mute_key: Callable = core.resolve_mute_key
     start_mute_key_listener: Callable = core.start_mute_key_listener
+    watch_parent: Callable[[int], Callable[[], bool]] = core.process_watch
+    parent_poll_s: float = PARENT_POLL_S
     # Tests only: awaited after `ready` in place of waiting for the stream to close.
     after_ready: Callable[[Listener], Awaitable[None]] | None = None
 
@@ -131,6 +140,16 @@ def _vad_level(text: str) -> int:
         raise argparse.ArgumentTypeError(f"{text!r} is not a whole number")
     if not 0 <= value <= 3:
         raise argparse.ArgumentTypeError(f"{value} is outside 0 to 3")
+    return value
+
+
+def _parent_pid(text: str) -> int:
+    try:
+        value = int(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{text!r} is not a whole number")
+    if value <= 0:
+        raise argparse.ArgumentTypeError(f"{value} is not a process id")
     return value
 
 
@@ -152,6 +171,7 @@ def parse_args(argv=None) -> argparse.Namespace:
     parser.add_argument("--mute-key", type=_mute_key, default="auto")
     parser.add_argument("--vad-level", type=_vad_level, default=2, help="Whisper voice detection, 0 to 3")
     parser.add_argument("--keyterm", action="append", default=[], help="a word to listen hard for; repeatable")
+    parser.add_argument("--parent-pid", type=_parent_pid, help="stop when this process (Claude Code) exits")
     args = parser.parse_args(argv)
     if args.engine == "deepgram":
         low, high = DEEPGRAM_PAUSE_MS
@@ -228,6 +248,14 @@ async def run(args: argparse.Namespace, deps: Deps) -> int:
         if not closed.done():
             closed.set_result(message)
 
+    async def watch_parent(pid: int) -> None:
+        alive = deps.watch_parent(pid)
+        while alive():
+            await asyncio.sleep(deps.parent_poll_s)
+        if not closed.done():
+            closed.set_result(_PARENT_GONE)
+
+    watcher = None if args.parent_pid is None else asyncio.ensure_future(watch_parent(args.parent_pid))
     stream = None
     stt = None
     try:
@@ -325,10 +353,15 @@ async def run(args: argparse.Namespace, deps: Deps) -> int:
             if not closed.done():
                 return 0
         message = await closed
+        if message is _PARENT_GONE:
+            log.warning("Claude Code (pid %s) has exited; turning the mic off.", args.parent_pid)
+            return 0
         return _fail(out, "connection", f"Deepgram connection closed: {message}")
     except _StageError as exc:
         return _fail(out, exc.stage, exc.message)
     finally:
+        if watcher is not None:
+            watcher.cancel()
         listener.send = None
         if stream is not None:
             for close in (stream.stop, stream.close):

@@ -460,3 +460,63 @@ def test_stdout_has_only_json(tmp_path):
     for line in deps.stdout.getvalue().splitlines():
         json.loads(line)
     assert deps.stderr.getvalue() != ""
+
+
+# -- The owner watch: the listener ends when Claude Code is gone ------------------------
+
+
+def test_parent_pid_must_be_a_positive_whole_number(tmp_path):
+    for bad in ("0", "-3", "abc"):
+        with pytest.raises(SystemExit):
+            listen.parse_args(argv(tmp_path, "--parent-pid", bad))
+    assert listen.parse_args(argv(tmp_path, "--parent-pid", "4242")).parent_pid == 4242
+    assert listen.parse_args(argv(tmp_path)).parent_pid is None
+
+
+def test_listener_exits_when_the_parent_is_gone(tmp_path, caplog):
+    rec = Recorder()
+    made = []
+    checks = []
+    answers = iter([True, True, False])
+
+    def watch(pid):
+        checks.append(pid)
+        return lambda: next(answers)
+
+    deps = make_deps(rec, deepgram=stt_factory(rec, made), watch_parent=watch, parent_poll_s=0.01)
+    code = listen.main(argv(tmp_path, "--engine", "deepgram", "--parent-pid", "4242"), deps)
+    assert code == 0
+    assert checks == [4242]
+    assert [e["type"] for e in events(deps)] == ["ready"]
+    assert made[0].finished
+    assert rec.log[-3:] == ["stream-stop", "stream-close", "stt-finish"]
+    assert not (tmp_path / "listen.pid").exists()
+    assert "Claude Code (pid 4242) has exited" in caplog.text
+
+
+def test_listener_without_a_parent_pid_does_not_watch(tmp_path):
+    def watch(pid):
+        raise AssertionError("no watch without --parent-pid")
+
+    deps = make_deps(Recorder(), watch_parent=watch, after_ready=_stop)
+    assert listen.main(argv(tmp_path, "--engine", "deepgram"), deps) == 0
+
+
+def test_listener_exits_when_a_real_parent_process_exits(tmp_path):
+    """The real watch, on a real short-lived process standing in for Claude Code."""
+    import subprocess
+    import sys
+    import time
+
+    parent = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(1.5)"])
+    try:
+        deps = make_deps(Recorder(), parent_poll_s=0.05)
+        started = time.monotonic()
+        code = listen.main(argv(tmp_path, "--engine", "deepgram", "--parent-pid", str(parent.pid)), deps)
+        elapsed = time.monotonic() - started
+    finally:
+        parent.kill()
+        parent.wait()
+    assert code == 0
+    assert 1.0 < elapsed < 15
+    assert not (tmp_path / "listen.pid").exists()
