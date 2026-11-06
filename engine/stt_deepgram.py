@@ -69,8 +69,10 @@ class DeepgramSTT:
         keyterms: list[str] | None = None,
         utterance_end_ms: int = 3000,
         model: str = MODEL,
+        on_partial: Callable[[str], Awaitable[None]] | None = None,
     ):
         self._on_utterance_full = on_utterance_full
+        self._on_partial = on_partial
         self._on_closed = on_closed
         self._encoding = encoding
         self._sample_rate = sample_rate
@@ -119,6 +121,13 @@ class DeepgramSTT:
             self._words.sort(key=lambda w: w["start"])
         except Exception as exc:
             log.debug("STT message parse error: %s", exc)
+            return
+        # The words heard so far in this sentence, so the prompt box can show
+        # them while the person is still talking.
+        if self._on_partial is not None:
+            text = " ".join(w["text"] for w in self._words).strip()
+            if text:
+                await self._on_partial(text)
 
     async def handle_utterance_end(self, utterance_end) -> None:
         last_word_end = getattr(utterance_end, "last_word_end", None)

@@ -36,6 +36,7 @@ import numpy as np
 
 import core
 from core import MicState, Output, TakeoverTimeout, accept, mute_key_label, state_paths, voice_command
+from text import strip_fillers
 
 log = logging.getLogger("desk-mic.listen")
 
@@ -86,13 +87,26 @@ class Listener:
             return
         cleaned = accept(text, confidence, MIN_CHARS, MIN_CONFIDENCE)
         if cleaned is None:
+            # Its live words may be showing in the prompt box; take them away.
+            self.out.event({"type": "partial", "text": ""})
             return
         self.out.say(f"Heard: {cleaned!r}")
         command = voice_command(cleaned)
         if command is not None:
+            self.out.event({"type": "partial", "text": ""})
             self.state.set_listening(command == "on", "voice command")
             return
         self.out.event({"type": "utterance", "text": cleaned})
+
+    async def on_partial(self, text: str) -> None:
+        """Words heard so far in a sentence that is not finished yet. Shown
+        live in the prompt box; the finished sentence still goes through
+        on_utterance_full."""
+        if not self.state.listening:
+            return
+        cleaned = strip_fillers(text).strip()
+        if cleaned:
+            self.out.event({"type": "partial", "text": cleaned})
 
     def audio_callback(self, indata, frames, time_info, status) -> None:
         """sounddevice callback. Audio is captured all the time but only sent
@@ -305,6 +319,7 @@ async def run(args: argparse.Namespace, deps: Deps) -> int:
                 model = {} if args.model is None else {"model": args.model}
                 stt = factory(
                     on_utterance_full=listener.on_utterance_full,
+                    on_partial=listener.on_partial,
                     on_closed=on_closed,
                     encoding="linear16",
                     sample_rate=SAMPLE_RATE,

@@ -9,6 +9,7 @@ import {
   parseWords,
   pauseMsFor,
   planUtterance,
+  previewText,
   rulesFrom,
   splitLines,
 } from './rules'
@@ -259,4 +260,27 @@ test('pauseMsFor checks the range each engine accepts', async () => {
   const short = pauseMsFor('whisper', 0.5)
   expect('error' in short ? short.error : '').toBe('Pause must be 1 second or more (desk-mic settings).')
   expect(pauseMsFor('whisper', 6)).toEqual({ ms: 6000 })
+})
+
+
+// ---- live words while a sentence is still being spoken --------------------
+
+test('previewText shows the words so far, after the draft', async () => {
+  expect(previewText('run the', WORD, '', ASLEEP, 0)).toBe('run the')
+  expect(previewText('and the stale', WORD, 'list PRs', ASLEEP, 0)).toBe('list PRs and the stale')
+})
+
+test('previewText hides a send word at the end', async () => {
+  expect(previewText('run the tests, send it', WORD, '', ASLEEP, 0)).toBe('run the tests')
+})
+
+test('previewText shows nothing until the wake word is heard', async () => {
+  expect(previewText('list the', WAKE_WORD, '', ASLEEP, 0)).toBeUndefined()
+  expect(previewText('Claude, what time', WAKE_WORD, '', ASLEEP, 0)).toBe('what time')
+  expect(previewText('and the stale', WAKE_WORD, 'list PRs', AWAKE, 1000)).toBe('list PRs and the stale')
+  expect(previewText('and the stale', WAKE_WORD, 'list PRs', AWAKE, 31000)).toBeUndefined()
+})
+
+test('previewText leaves clear words alone', async () => {
+  expect(previewText('scratch that', WORD, 'list PRs', ASLEEP, 0)).toBeUndefined()
 })

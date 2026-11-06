@@ -21,6 +21,7 @@ function fixtureLine(type: string): string {
 const READY = (muteKey: string | null) =>
   JSON.stringify({ type: 'ready', device: 'Desk Microphone', mute_key: muteKey, pid: 4242 })
 const UTTER = (text: string) => JSON.stringify({ type: 'utterance', text })
+const PARTIAL = (text: string) => JSON.stringify({ type: 'partial', text })
 const STATE = (listening: boolean) => JSON.stringify({ type: 'state', listening, source: 'mute key' })
 const ERROR = (stage: string, message: string) => JSON.stringify({ type: 'error', stage, message })
 
@@ -770,4 +771,70 @@ test('a flag that names another reply is left alone', { options: SPEAK }, async 
   r.writes[FLAG] = '99'
   await mic($, 'off')
   expect(r.writes[FLAG]).toBe('99')
+})
+
+
+// ---- live words in the box ------------------------------------------------
+
+test('words show in the box while speaking, then the sentence sends', { options: { engine: 'whisper' } }, async ($, on) => {
+  const r = rig(on)
+  await begin($)
+  await micOn($, r)
+  await say(r, PARTIAL('Claude, what'))
+  expect(r.draft).toBe('what')
+  await say(r, PARTIAL('Claude, what time is it'))
+  expect(r.draft).toBe('what time is it')
+  await say(r, UTTER('Claude, what time is it, send it'))
+  expect(r.submits.map(s => s.text)).toEqual(['what time is it'])
+  expect(r.draft).toBe('')
+})
+
+test('no live words before the wake word', { options: { engine: 'whisper' } }, async ($, on) => {
+  const r = rig(on)
+  await begin($)
+  await micOn($, r)
+  await say(r, PARTIAL('list the'))
+  expect(r.fills).toEqual([])
+})
+
+test('live words sit after the draft and are not doubled', { options: { engine: 'whisper', useWakeWord: false } }, async ($, on) => {
+  const r = rig(on)
+  await begin($)
+  await micOn($, r)
+  await say(r, UTTER('list PRs'))
+  await say(r, PARTIAL('and the stale'))
+  expect(r.draft).toBe('list PRs and the stale')
+  await say(r, UTTER('and the stale ones'))
+  expect(r.draft).toBe('list PRs and the stale ones')
+})
+
+test('an empty live update puts the box back', { options: { engine: 'whisper', useWakeWord: false } }, async ($, on) => {
+  const r = rig(on)
+  await begin($)
+  await micOn($, r)
+  await say(r, UTTER('list PRs'))
+  await say(r, PARTIAL('mic'))
+  expect(r.draft).toBe('list PRs mic')
+  await say(r, PARTIAL(''))
+  expect(r.draft).toBe('list PRs')
+})
+
+test('muting puts the box back', { options: { engine: 'whisper', useWakeWord: false } }, async ($, on) => {
+  const r = rig(on)
+  await begin($)
+  await micOn($, r)
+  await say(r, PARTIAL('half a'))
+  expect(r.draft).toBe('half a')
+  await say(r, STATE(false))
+  expect(r.draft).toBe('')
+})
+
+test('text typed into the box is not overwritten by live words', { options: { engine: 'whisper', useWakeWord: false } }, async ($, on) => {
+  const r = rig(on)
+  await begin($)
+  await micOn($, r)
+  await say(r, PARTIAL('half a'))
+  r.draft = 'typed by hand'
+  await say(r, PARTIAL('half a sentence'))
+  expect(r.draft).toBe('typed by hand half a sentence')
 })

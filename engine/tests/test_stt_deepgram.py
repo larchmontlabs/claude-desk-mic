@@ -63,6 +63,7 @@ class Harness:
     def __init__(self):
         self.calls = []
         self.closed = []
+        self.partials = []
 
         async def full(text, conf):
             self.calls.append((text, conf))
@@ -70,7 +71,10 @@ class Harness:
         async def closed(reason):
             self.closed.append(reason)
 
-        self.stt = DeepgramSTT(full, closed)
+        async def partial(text):
+            self.partials.append(text)
+
+        self.stt = DeepgramSTT(full, closed, on_partial=partial)
 
 
 def run(coro):
@@ -213,3 +217,29 @@ def test_flushed_interim_words_are_not_sent_again_by_the_final():
 
     run(go())
     assert [t for t, _ in h.calls] == ["hello", "next"]
+
+
+def test_each_transcript_reports_the_words_so_far_as_a_partial():
+    h = Harness()
+
+    async def go():
+        await h.stt.handle_transcript(result([("hell", 0.0, 0.4)], 0.3, final=False))
+        await h.stt.handle_transcript(result([("hello", 0.0, 0.5)], 0.9))
+        await h.stt.handle_transcript(result([("there", 0.6, 1.0)], 0.9, final=False))
+        await h.stt.handle_utterance_end(NS(last_word_end=1.0))
+        await h.stt.handle_transcript(result([("next", 1.5, 1.8)], 0.9, final=False))
+
+    run(go())
+    assert h.partials == ["hell", "hello", "hello there", "next"]
+    assert h.calls == [("hello there", 0.9)]
+
+
+def test_no_partial_callback_is_fine():
+    async def full(text, conf):
+        pass
+
+    async def closed(reason):
+        pass
+
+    stt = DeepgramSTT(full, closed)
+    run(stt.handle_transcript(result([("hello", 0.0, 0.5)], 0.9)))

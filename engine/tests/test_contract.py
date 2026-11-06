@@ -67,6 +67,7 @@ def _all_emit_paths(tmp_path, monkeypatch) -> list[str]:
     speaking = [False]
 
     async def drive(listener):
+        await listener.on_partial("run the")
         await listener.on_utterance_full("run the tests", 0.9)
         await listener.on_utterance_full("mic off", 0.9)
         speaking[0] = True
@@ -117,7 +118,7 @@ def _all_emit_paths(tmp_path, monkeypatch) -> list[str]:
 
 def test_fixture_has_every_event_and_stage():
     keys = set(_fixture_shapes())
-    assert {t for t, _ in keys} == {"ready", "loading", "utterance", "state", "speaking", "takeover", "error"}
+    assert {t for t, _ in keys} == {"ready", "loading", "partial", "utterance", "state", "speaking", "takeover", "error"}
     assert {s for t, s in keys if t == "error"} == STAGES
 
 

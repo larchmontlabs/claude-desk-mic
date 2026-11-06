@@ -4,6 +4,7 @@
 export const LISTENER_EVENTS_JSONL = `
 {"type":"ready","device":"Desk Microphone","mute_key":"Right Option","pid":4242}
 {"type":"loading","model":"base.en"}
+{"type":"partial","text":"run the"}
 {"type":"utterance","text":"run the tests"}
 {"type":"state","listening":false,"source":"voice command"}
 {"type":"speaking","playing":true}

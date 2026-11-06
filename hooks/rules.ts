@@ -20,6 +20,7 @@ export type ErrorStage = (typeof ERROR_STAGES)[number]
 export type MicEvent =
   | { type: 'ready'; device: string; mute_key: string | null; pid: number }
   | { type: 'loading'; model: string }
+  | { type: 'partial'; text: string }
   | { type: 'utterance'; text: string }
   | { type: 'state'; listening: boolean; source: string }
   | { type: 'speaking'; playing: boolean }
@@ -52,6 +53,7 @@ function isMicEvent(v: Json): boolean {
       return isStr(v.device) && (isStr(v.mute_key) || v.mute_key === null) && isNum(v.pid)
     case 'loading':
       return isStr(v.model)
+    case 'partial':
     case 'utterance':
       return isStr(v.text)
     case 'state':
@@ -189,4 +191,20 @@ export function planUtterance(
   // Sending or clearing ends the stretch; the next prompt needs the wake word again.
   const stillAwake = action.kind !== 'submit' && action.kind !== 'clear'
   return { action, awake: { isAwake: stillAwake, lastHeardMs: nowMs } }
+}
+
+/** What the prompt box should show while a sentence is still being spoken:
+ *  the draft, then the words so far, without the wake word or a trailing send
+ *  word. Undefined when nothing should show (the wake word is needed and not
+ *  heard, or the words are a clear command). Changes no awake state. */
+export function previewText(text: string, rules: Rules, draft: string, awake: Awake, nowMs: number): string | undefined {
+  let sentence = text
+  if (rules.useWakeWord) {
+    const isAwake = awake.isAwake && nowMs - awake.lastHeardMs <= AWAKE_FOR_MS
+    const rest = afterWakeWord(text, rules.wakeWords)
+    if (!isAwake && rest === undefined) return undefined
+    sentence = rest ?? text
+  }
+  if (CLEAR_WORDS.test(sentence)) return undefined
+  return join(draft, cutSendWord(sentence, rules.sendWords).text)
 }

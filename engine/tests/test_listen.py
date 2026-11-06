@@ -53,7 +53,7 @@ def test_utterance_fillers_are_stripped():
 def test_low_confidence_is_dropped():
     listener, _, stdout, _ = _listener()
     asyncio.run(listener.on_utterance_full("list the open pull requests", 0.3))
-    assert _lines(stdout) == []
+    assert _lines(stdout) == [{"type": "partial", "text": ""}]
 
 
 def test_whisper_utterance_has_no_confidence_check():
@@ -66,7 +66,10 @@ def test_mic_off_command_emits_state_and_no_utterance():
     listener, state, stdout, _ = _listener()
     asyncio.run(listener.on_utterance_full("mic off", 0.99))
     assert state.listening is False
-    assert _lines(stdout) == [{"type": "state", "listening": False, "source": "voice command"}]
+    assert _lines(stdout) == [
+        {"type": "partial", "text": ""},
+        {"type": "state", "listening": False, "source": "voice command"},
+    ]
 
 
 def test_muted_utterance_is_dropped():
@@ -520,3 +523,27 @@ def test_listener_exits_when_a_real_parent_process_exits(tmp_path):
     assert code == 0
     assert 1.0 < elapsed < 15
     assert not (tmp_path / "listen.pid").exists()
+
+
+
+def test_partial_is_sent_while_listening():
+    listener, state, stdout, _ = _listener()
+    asyncio.run(listener.on_partial("um, run the"))
+    assert _lines(stdout) == [{"type": "partial", "text": "run the"}]
+
+
+def test_partial_is_dropped_while_muted():
+    listener, state, stdout, _ = _listener()
+    state.set_listening(False, "test")
+    before = len(_lines(stdout))
+    asyncio.run(listener.on_partial("run the"))
+    asyncio.run(listener.on_partial("   "))
+    assert len(_lines(stdout)) == before
+
+
+def test_a_dropped_sentence_clears_the_live_words():
+    listener, state, stdout, _ = _listener()
+    asyncio.run(listener.on_utterance_full("list the open pull requests", 0.3))
+    asyncio.run(listener.on_utterance_full("mic off", 0.9))
+    partials = [e for e in _lines(stdout) if e["type"] == "partial"]
+    assert partials == [{"type": "partial", "text": ""}, {"type": "partial", "text": ""}]
