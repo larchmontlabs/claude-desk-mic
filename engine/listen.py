@@ -140,6 +140,8 @@ class Deps:
     start_mute_key_listener: Callable = core.start_mute_key_listener
     watch_parent: Callable[[int], Callable[[], bool]] = core.process_watch
     parent_poll_s: float = PARENT_POLL_S
+    # Also write the log to <state-dir>/listen.log. On for a real run only.
+    log_file: bool = False
     # Tests only: awaited after `ready` in place of waiting for the stream to close.
     after_ready: Callable[[Listener], Awaitable[None]] | None = None
 
@@ -394,13 +396,38 @@ async def run(args: argparse.Namespace, deps: Deps) -> int:
 
 def main(argv=None, deps: Deps | None = None) -> int:
     args = parse_args(argv)
-    deps = deps or Deps()
+    deps = deps or Deps(log_file=True)
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(message)s",
         stream=deps.stderr if deps.stderr is not None else sys.stderr,
     )
-    return asyncio.run(run(args, deps))
+    if deps.log_file:
+        _log_to_file(args.state_dir / "listen.log")
+    log.info(
+        "listen.py starting: engine=%s parent_pid=%s python=%s",
+        args.engine,
+        args.parent_pid,
+        sys.executable,
+    )
+    try:
+        return asyncio.run(run(args, deps))
+    except BaseException:
+        log.exception("listen.py stopped on an error")
+        raise
+
+
+def _log_to_file(path: Path) -> None:
+    """Each run's log also goes to <state-dir>/listen.log (replaced each run),
+    so a mic that stops can be looked into after the fact."""
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        handler = logging.FileHandler(path, mode="w", encoding="utf-8")
+    except OSError as exc:
+        log.warning("Could not open %s: %s", path, exc)
+        return
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+    logging.getLogger().addHandler(handler)
 
 
 if __name__ == "__main__":

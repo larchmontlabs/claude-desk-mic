@@ -217,7 +217,7 @@ async function speak($: Ctx, st: State, answer: string): Promise<void> {
 /** The start failed, the listener died, or handling one of its events threw:
  *  end the listener (so the mic is never left open with nothing reading it),
  *  say why and go back to off. */
-function failed($: Ctx, st: State, myRun: number, why: string): void {
+function failed($: Ctx, st: State, myRun: number, why: string, detail = ''): void {
   if (myRun !== st.run) return
   st.run++
   st.phase = 'off'
@@ -226,6 +226,16 @@ function failed($: Ctx, st: State, myRun: number, why: string): void {
   if (child) void child.return(undefined as never).catch(() => undefined)
   $.ui.status(undefined)
   $.ui.toast(`Mic stopped: ${why}`)
+  // The toast goes away; keep the reason (and the listener's last output) where it can be read later.
+  if (st.stateDir) {
+    const text = detail ? `${why}
+
+Listener output:
+${detail}
+` : `${why}
+`
+    void $.fs.write(`${st.stateDir}/last-stop.txt`, text).catch(() => undefined)
+  }
   void stopSpeech($, st).killed
 }
 
@@ -439,7 +449,7 @@ async function start($: Ctx, st: State, myRun: number, pauseMs: number): Promise
   if (myRun !== st.run) return
   $.ui.log(`desk-mic listener exited (code ${code}): ${errTail.slice(-800)}`, { to: 'debug' })
   const lastLine = errTail.trim().split(/\r?\n/).pop() ?? ''
-  failed($, st, myRun, lastLine || `exit code ${code}`)
+  failed($, st, myRun, lastLine || `exit code ${code}`, errTail.slice(-1500))
 }
 
 async function stopMic($: Ctx, st: State): Promise<void> {

@@ -454,6 +454,17 @@ test('listener exit shows why', { options: { engine: 'whisper' } }, async ($, on
   expect(r.status).toBe(undefined)
 })
 
+test('why the mic stopped is kept in last-stop.txt', { options: { engine: 'whisper' } }, async ($, on) => {
+  const r = rig(on)
+  await begin($)
+  await micOn($, r)
+  r.listener.push({ exit: 1 })
+  await until(() => r.toasts.some(t => t.startsWith('Mic stopped')), 'the exit toast')
+  await drain()
+  const kept = r.writes['C:/Users/t/.claude-desk-mic/last-stop.txt']
+  expect(kept).toMatch(/exit code 1/)
+})
+
 test('a mute key failure alone keeps the mic on', { options: { engine: 'whisper' } }, async ($, on) => {
   const r = rig(on)
   await begin($)
