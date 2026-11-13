@@ -12,14 +12,14 @@ Talk to Claude from your computer's microphone. `/mic` turns the mic on and off,
 From a terminal:
 
 ```
-claude plugin marketplace add ryangalea23/claude-desk-mic
+claude plugin marketplace add larchmontlabs/claude-desk-mic
 claude plugin install desk-mic@claude-desk-mic
 ```
 
 Or inside Claude Code:
 
 ```
-/plugin marketplace add ryangalea23/claude-desk-mic
+/plugin marketplace add larchmontlabs/claude-desk-mic
 /plugin install desk-mic@claude-desk-mic
 ```
 

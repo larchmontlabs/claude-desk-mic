@@ -3,7 +3,7 @@
   "version": "0.2.0",
   "description": "Talk to Claude from your computer's microphone: /mic puts what you say in the prompt box (or sends it), and can speak replies back.",
   "author": {
-    "name": "Ryan Galea"
+    "name": "Larchmont Labs"
   },
   "license": "MIT",
   "userConfig": {
