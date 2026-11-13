@@ -53,6 +53,8 @@ type Config = {
   speakBack: boolean
   // Keep listening while a reply is read aloud, so it can be interrupted.
   interruptReading: boolean
+  // Part of the mic's name to use; blank: the system default.
+  micDevice: string
   voice: string
 }
 
@@ -163,6 +165,7 @@ function configFrom(options: Readonly<Record<string, unknown>>): Config {
     muteKey: str(options.muteKey, 'auto'),
     speakBack: options.speakBack === true,
     interruptReading: options.interruptReading !== false,
+    micDevice: typeof options.micDevice === 'string' ? options.micDevice.trim() : '',
     voice: str(options.voice, 'en-US-AriaNeural'),
   }
 }
@@ -623,6 +626,7 @@ async function start($: Ctx, st: State, myRun: number, pauseMs: number): Promise
     '--parent-pid',
     String(py.sessionPid),
     ...(cfg.engine === 'whisper' ? ['--model', cfg.whisperModel] : []),
+    ...(cfg.micDevice !== '' ? ['--device', cfg.micDevice] : []),
     ...(cfg.interruptReading ? ['--hear-while-speaking'] : []),
     ...(cfg.rules.mode === 'word' ? cfg.rules.sendWords.flatMap(word => ['--send-word', word]) : []),
     ...keyterms(cfg.rules).flatMap(term => ['--keyterm', term]),

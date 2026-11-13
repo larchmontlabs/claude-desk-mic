@@ -63,6 +63,7 @@ Dictated prompts queue until Claude is idle. The prompt box clears as soon as on
 | `interruptReading` (Interrupt reading aloud) | Keep listening while a reply is read aloud, so a stop word or a sentence starting with the wake word cuts it off. Turn off if loud speakers make it cut itself off | `true` |
 | `voice` (Voice) | edge-tts voice name | `en-US-AriaNeural` |
 | `muteKey` (Mute key) | auto = Right Ctrl on Windows, Right Option on Mac Options: `auto`, `right ctrl`, `left ctrl`, `right alt`, `right shift`, `f13`. | `auto` |
+| `micDevice` (Microphone) | Part of the microphone's name to use, e.g. Jabra (any case). Blank: the system's default input. If no microphone matches, the mic does not start and lists the ones it found | `` |
 <!-- settings:end -->
 
 This table is generated from `.claude-plugin/plugin.json` by `python scripts/settings_table.py`, and a test fails if it drifts.

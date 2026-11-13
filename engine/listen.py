@@ -28,6 +28,7 @@ import logging
 import os
 import sys
 import threading
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Awaitable, Callable
@@ -42,6 +43,10 @@ log = logging.getLogger("desk-mic.listen")
 
 SAMPLE_RATE = 16000
 CHANNELS = 1
+# Audio comes in 100 ms blocks (1600 samples): few callbacks, still live enough
+# for streaming speech to text.
+BLOCK_SAMPLES = 1600
+SPEAKING_CHECK_S = 0.2
 # voice-bridge desk_mic.py DESK_MIC_MIN_CHARS / DESK_MIC_MIN_CONFIDENCE defaults.
 MIN_CHARS = 4
 MIN_CONFIDENCE = 0.6
@@ -73,11 +78,17 @@ class _LockedOutput(Output):
 class Listener:
     """What happens to each sentence and each block of audio."""
 
-    def __init__(self, out: Output, state: MicState, flag, is_speaking=core.is_speaking) -> None:
+    def __init__(self, out: Output, state: MicState, flag, is_speaking=core.is_speaking, clock=None) -> None:
         self.out = out
         self.state = state
         self._flag = flag
         self._is_speaking = is_speaking
+        # The speaking check reads a file and looks up a process; on every audio
+        # block it made the callback fall behind (input overflow), so it runs at
+        # most every SPEAKING_CHECK_S and the answer is reused in between.
+        self._clock = clock or time.monotonic
+        self._speaking = False
+        self._checked_at = None
         # Keep sending audio while a reply is read aloud, so the person can
         # interrupt it; the mod tells its own voice apart from theirs.
         self.hear_while_speaking = False
@@ -129,8 +140,12 @@ class Listener:
         while listening and while speak-back is not playing."""
         if status:
             log.warning("Audio status: %s", status)
-        speaking = self._is_speaking(self._flag)
-        self.state.set_speaking(speaking)
+        now = self._clock()
+        if self._checked_at is None or now - self._checked_at >= SPEAKING_CHECK_S - 1e-9:
+            self._checked_at = now
+            self._speaking = self._is_speaking(self._flag)
+            self.state.set_speaking(self._speaking)
+        speaking = self._speaking
         if (speaking and not self.hear_while_speaking) or not self.state.listening or self.send is None:
             return
         pcm = (np.clip(indata[:, 0], -1.0, 1.0) * 32767).astype(np.int16).tobytes()
@@ -202,6 +217,8 @@ def parse_args(argv=None) -> argparse.Namespace:
     parser.add_argument("--pause-ms", type=int, default=3000, help="quiet time that ends a sentence")
     parser.add_argument("--mute-key", type=_mute_key, default="auto")
     parser.add_argument("--vad-level", type=_vad_level, default=2, help="Whisper voice detection, 0 to 3")
+    parser.add_argument("--device", default="",
+                        help="use the first microphone whose name contains this (any case); blank: the default")
     parser.add_argument("--hear-while-speaking", action="store_true",
                         help="keep listening while a reply is read aloud, so it can be interrupted")
     parser.add_argument("--send-word", action="append", default=[],
@@ -230,22 +247,39 @@ class _StageError(Exception):
         self.message = message
 
 
-def _input_device(sd) -> str:
+def _input_device(sd, wanted: str = ""):
+    """(index, name) of the mic to open. `wanted` blank: the system default
+    (index None). Otherwise the first input device whose name contains it, any
+    case; none matching is an error that lists the mics, never the default."""
     try:
         devices = sd.query_devices()
-        index = sd.default.device[0]
+        default_index = sd.default.device[0]
     except Exception as exc:
         raise _StageError(
             "device",
             f"Could not list audio devices ({exc}). Check that a microphone is connected, then turn the mic on again.",
         )
-    if index is None or index < 0 or index >= len(devices):
+    wanted = wanted.strip()
+    if wanted:
+        inputs = [(i, d) for i, d in enumerate(devices) if d.get("max_input_channels", 1) > 0]
+        for i, d in inputs:
+            if wanted.lower() in str(d["name"]).lower():
+                return i, str(d["name"])
+        # Windows also lists driver-internal names ("@System32\...", "Input ()"); leave those out.
+        readable = {str(d["name"]) for _, d in inputs if "@" not in str(d["name"]) and not str(d["name"]).endswith("()")}
+        names = ", ".join(sorted(readable)) or "none"
+        raise _StageError(
+            "device",
+            f"No microphone named {wanted!r}. Microphones found: {names}. Change the micDevice setting, "
+            "or leave it blank for the default.",
+        )
+    if default_index is None or default_index < 0 or default_index >= len(devices):
         raise _StageError(
             "device",
             "No microphone found. Plug one in, or pick a default input device in your sound settings, "
             "then turn the mic on again.",
         )
-    return str(devices[index]["name"])
+    return None, str(devices[default_index]["name"])
 
 
 def _mic_error(device: str, exc: Exception) -> _StageError:
@@ -301,12 +335,17 @@ async def run(args: argparse.Namespace, deps: Deps) -> int:
             sd = deps.sd if deps.sd is not None else importlib.import_module("sounddevice")
         except Exception as exc:
             raise _StageError("device", f"Could not load the audio library ({exc}). Reinstall desk-mic's engine.")
-        device = _input_device(sd)
+        device_index, device = _input_device(sd, args.device)
 
         # (2) mic
         try:
             stream = sd.InputStream(
-                samplerate=SAMPLE_RATE, channels=CHANNELS, dtype="float32", callback=listener.audio_callback
+                device=device_index,
+                samplerate=SAMPLE_RATE,
+                channels=CHANNELS,
+                dtype="float32",
+                blocksize=BLOCK_SAMPLES,
+                callback=listener.audio_callback,
             )
             stream.start()
         except Exception as exc:

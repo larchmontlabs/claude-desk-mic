@@ -1364,3 +1364,18 @@ test('a wake word only in the live words does not wake the mic for the next sent
   expect(r.fills).toEqual([])
   expect(r.status).toBe('mic on - say "claude" to start')
 })
+
+
+test('the micDevice setting picks the mic by name', { options: { deepgramApiKey: 'k', micDevice: 'Jabra' } }, async ($, on) => {
+  const r = rig(on)
+  await begin($)
+  await micOn($, r)
+  expect(argPair(r.spawns[0]!.argv, '--device')).toBe('Jabra')
+})
+
+test('a blank micDevice uses the default mic', { options: { deepgramApiKey: 'k' } }, async ($, on) => {
+  const r = rig(on)
+  await begin($)
+  await micOn($, r)
+  expect(r.spawns[0]!.argv).not.toContain('--device')
+})

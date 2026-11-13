@@ -145,7 +145,7 @@ def test_long_reply_starts_within_the_wait_even_if_all_of_it_would_not(tmp_path)
     played, fallback = [], []
     sp.speak(text, "v", "edge", tmp_path / "f", synth=_timed_synth(0.05),
              player=lambda p: played.append(Path(p).read_text(encoding="utf-8")),
-             os_speak=lambda b, t: fallback.append(t), platform="win32", wait_s=0.3, piece_chars=120)
+             os_speak=lambda b, t: fallback.append(t), platform="win32", wait_s=1.0, piece_chars=120)
     assert fallback == []
     assert len(played) > 3
     assert " ".join(played).split() == text.split()

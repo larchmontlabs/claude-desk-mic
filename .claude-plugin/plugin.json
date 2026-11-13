@@ -116,6 +116,12 @@
         "f13"
       ],
       "default": "auto"
+    },
+    "micDevice": {
+      "type": "string",
+      "title": "Microphone",
+      "description": "Part of the microphone's name to use, e.g. Jabra (any case). Blank: the system's default input. If no microphone matches, the mic does not start and lists the ones it found",
+      "default": ""
     }
   }
 }

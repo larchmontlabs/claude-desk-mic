@@ -138,7 +138,7 @@ class DeepgramSTT:
             log.debug("STT message parse error: %s", exc)
             return
         if self._ends_with_flush_word():
-            await self._flush(max(w["end"] for w in self._words), "send word")
+            await self._flush(max(w["end"] for w in self._words), "send word", final_confidence_only=True)
             return
         # The words heard so far in this sentence, so the prompt box can show
         # them while the person is still talking.
@@ -157,7 +157,7 @@ class DeepgramSTT:
             return
         await self._flush(last_word_end, "UtteranceEnd")
 
-    async def _flush(self, last_word_end: float, why: str) -> None:
+    async def _flush(self, last_word_end: float, why: str, final_confidence_only: bool = False) -> None:
         """Send the pending words up to last_word_end as one sentence; later
         results for those words (a final after an interim) are ignored."""
         flushed = [w for w in self._words if w["end"] <= last_word_end]
@@ -168,9 +168,13 @@ class DeepgramSTT:
         text = " ".join(w["text"] for w in flushed).strip()
         if not text:
             return
-        # Conservative: the weakest result sets the confidence.
-        confidence = min(w["confidence"] for w in flushed)
-        log.info("STT %s firing: %d chars (confidence=%.2f)", why, len(text), confidence)
+        # Conservative: the weakest result sets the confidence. Deepgram gives
+        # words still in progress a confidence of 0, so an early send (on the
+        # send word) counts only confirmed words, and none confirmed means none.
+        scored = [w for w in flushed if w["final"]] if final_confidence_only else flushed
+        confidence = min(w["confidence"] for w in scored) if scored else None
+        log.info("STT %s firing: %d chars (confidence=%s)", why, len(text),
+                 "none" if confidence is None else f"{confidence:.2f}")
         log.debug("STT text: %r", text)
         await self._on_utterance_full(text, confidence)
 

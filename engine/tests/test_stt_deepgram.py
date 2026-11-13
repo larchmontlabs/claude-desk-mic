@@ -282,7 +282,8 @@ def test_a_send_word_heard_at_the_end_flushes_at_once():
         await h.stt.handle_utterance_end(NS(last_word_end=0.9))
 
     run(go())
-    assert h.calls == [("what time send it.", 0.9)]
+    # Sent on words still in progress: no confirmed word, so no confidence to hold it on.
+    assert h.calls == [("what time send it.", None)]
 
 
 def test_a_send_word_inside_a_word_or_mid_sentence_does_not_flush():
@@ -303,3 +304,25 @@ def test_no_flush_words_waits_for_the_pause():
 
     run(go())
     assert h.calls == []
+
+
+def test_an_early_send_on_words_still_in_progress_is_not_held_for_low_confidence():
+    h = SendHarness(["send it"])
+
+    async def go():
+        # Deepgram gives words still in progress a confidence of 0.
+        await h.stt.handle_transcript(result([("what", 0.0, 0.2), ("send", 0.3, 0.5), ("it", 0.5, 0.6)], 0.0, final=False))
+
+    run(go())
+    assert h.calls == [("what send it", None)]
+
+
+def test_an_early_send_uses_the_confidence_of_confirmed_words():
+    h = SendHarness(["send it"])
+
+    async def go():
+        await h.stt.handle_transcript(result([("what", 0.0, 0.2), ("time", 0.3, 0.5)], 0.8))
+        await h.stt.handle_transcript(result([("send", 0.6, 0.8), ("it", 0.8, 0.9)], 0.0, final=False))
+
+    run(go())
+    assert h.calls == [("what time send it", 0.8)]

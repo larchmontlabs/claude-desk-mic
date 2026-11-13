@@ -25,7 +25,10 @@ def _listener(speaking=False, sent=None):
     out = core.Output(emit_json=True, stdout=stdout, stderr=stderr)
     state = core.MicState(out)
     flag_value = [speaking]
-    listener = listen.Listener(out, state, flag="flag", is_speaking=lambda flag: flag_value[0])
+    # A clock a second further on at each audio block, so every block re-checks the flag.
+    ticks = iter(range(1, 10**6))
+    listener = listen.Listener(out, state, flag="flag", is_speaking=lambda flag: flag_value[0],
+                               clock=lambda: float(next(ticks)))
     if sent is not None:
         listener.send = sent.append
     return listener, state, stdout, flag_value
@@ -620,3 +623,58 @@ def test_listen_log_holds_neither_speech_nor_the_key(tmp_path):
     assert "listen.py starting" in text
     assert "private" not in text
     assert deps.env["DEEPGRAM_API_KEY"] not in text
+
+
+# -- Picking the mic, and keeping the audio callback fast -------------------------
+
+def _devices():
+    return [
+        {"name": "Microphone (Lumina Camera - Raw)", "max_input_channels": 1},
+        {"name": "Speakers (Jabra SPEAK 510 USB)", "max_input_channels": 0},
+        {"name": "Microphone (Jabra SPEAK 510 USB)", "max_input_channels": 1},
+    ]
+
+
+def test_a_named_mic_is_used_instead_of_the_default(tmp_path):
+    rec = Recorder()
+    sd = FakeSD(rec, devices=_devices(), default_in=0)
+    deps = make_deps(rec, sd=sd, after_ready=_stop)
+    listen.main(argv(tmp_path, "--engine", "deepgram", "--device", "jabra"), deps)
+    assert sd.streams[0].kwargs["device"] == 2
+    assert events(deps)[0]["device"] == "Microphone (Jabra SPEAK 510 USB)"
+
+
+def test_a_named_mic_that_is_not_there_is_an_error_not_the_default(tmp_path):
+    rec = Recorder()
+    sd = FakeSD(rec, devices=_devices(), default_in=0)
+    deps = make_deps(rec, sd=sd, after_ready=_stop)
+    listen.main(argv(tmp_path, "--engine", "deepgram", "--device", "Blue Yeti"), deps)
+    assert sd.streams == []
+    (err,) = [e for e in events(deps) if e["type"] == "error"]
+    assert err["stage"] == "device"
+    assert "Blue Yeti" in err["message"] and "Jabra SPEAK 510" in err["message"]
+
+
+def test_the_mic_is_read_in_100_ms_blocks(tmp_path):
+    rec = Recorder()
+    sd = FakeSD(rec)
+    deps = make_deps(rec, sd=sd, after_ready=_stop)
+    listen.main(argv(tmp_path, "--engine", "deepgram"), deps)
+    assert sd.streams[0].kwargs["blocksize"] == 1600
+
+
+def test_the_speaking_check_runs_at_most_every_200_ms():
+    calls = []
+    now = [0.0]
+
+    def is_speaking(flag):
+        calls.append(now[0])
+        return False
+
+    out = core.Output(emit_json=True, stdout=io.StringIO(), stderr=io.StringIO())
+    listener = listen.Listener(out, core.MicState(out), flag="flag", is_speaking=is_speaking, clock=lambda: now[0])
+    listener.send = lambda pcm: None
+    for i in range(10):
+        now[0] = i * 0.05
+        listener.audio_callback(audio(), 160, None, None)
+    assert calls == [0.0, 0.2, 0.4]
