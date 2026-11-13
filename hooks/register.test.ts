@@ -915,8 +915,24 @@ test('text typed into the box is not overwritten by live words', { options: { en
   await say(r, PARTIAL('half a sentence'))
   // Typing during live words pauses them, so no keystroke is overwritten.
   expect(r.draft).toBe('typed by hand')
+  // The person took the box over mid-sentence: it is left as they have it,
+  // and what was heard goes in a toast instead of being added twice.
   await say(r, UTTER('half a sentence done'))
-  expect(r.draft).toBe('typed by hand half a sentence done')
+  expect(r.draft).toBe('typed by hand')
+  expect(r.toasts.some(t => t.includes('half a sentence done'))).toBe(true)
+  // The next sentence works on the box as the person left it.
+  await say(r, UTTER('send it'))
+  expect(r.submits.map(s => s.text)).toEqual(['typed by hand'])
+})
+
+test('typing onto live words does not double them', { options: { engine: 'whisper', useWakeWord: false } }, async ($, on) => {
+  const r = rig(on)
+  await begin($)
+  await micOn($, r)
+  await say(r, PARTIAL('half a'))
+  await typeInBox($, r, 'half a x')
+  await say(r, UTTER('half a sentence done'))
+  expect(r.draft).toBe('half a x')
 })
 
 

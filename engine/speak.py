@@ -174,10 +174,25 @@ def _synth_pieces(synth, pieces, voice, folder, stop):
     return paths, ready
 
 
-def _sweep(folder):
-    """Remove pieces a killed run left behind (one reading runs at a time)."""
-    for old in Path(folder).glob("*"):
-        _remove(old)
+def _pid_alive(pid):
+    from core import _process_gone
+
+    return not _process_gone(pid)
+
+
+def _sweep(parent):
+    """Remove what killed readings left behind: each reading keeps its pieces in
+    a folder named by its pid, so a folder whose process is gone is left over.
+    A live reading's folder (another session's) is kept."""
+    import shutil as _shutil
+
+    for entry in Path(parent).iterdir():
+        if entry.is_file():
+            _remove(entry)
+        elif entry.is_dir():
+            if entry.name.isdigit() and int(entry.name) != os.getpid() and _pid_alive(int(entry.name)):
+                continue
+            _shutil.rmtree(entry, ignore_errors=True)
 
 
 def _remove(path):
@@ -202,9 +217,11 @@ def speak(text, voice, backend, flag, *, synth=None, player=None, os_speak=None,
     try:
         if backend == "edge":
             pieces = split_pieces(text, piece_chars)
-            folder = flag.parent / "speech"
-            folder.mkdir(parents=True, exist_ok=True)
-            _sweep(folder)
+            parent = flag.parent / "speech"
+            parent.mkdir(parents=True, exist_ok=True)
+            _sweep(parent)
+            folder = parent / str(os.getpid())
+            folder.mkdir(exist_ok=True)
             stop = threading.Event()
             paths, ready = _synth_pieces(synth, pieces, voice, folder, stop)
             try:
@@ -219,9 +236,13 @@ def speak(text, voice, backend, flag, *, synth=None, player=None, os_speak=None,
                 return
             finally:
                 stop.set()
-                for i, path in enumerate(paths):
-                    if path is not None and ready[i].is_set():
+                for path in paths:
+                    if path is not None:
                         _remove(path)
+                try:
+                    folder.rmdir()
+                except OSError:
+                    pass  # a piece still being made; the next reading sweeps it
         else:
             os_speak(backend, text)
     finally:

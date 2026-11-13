@@ -170,7 +170,7 @@ def test_pieces_live_in_the_state_folder_and_are_removed_after_a_fallback(tmp_pa
     sp.speak(text, "v", "edge", tmp_path / "f", synth=_timed_synth(0.0, fail_on="number 10 "),
              player=lambda p: None, os_speak=lambda b, t: None, platform="win32", wait_s=1.0, piece_chars=60)
     time.sleep(0.2)
-    assert list((tmp_path / "speech").glob("*")) == []
+    assert list((tmp_path / "speech").rglob("*.mp3")) == []
 
 
 def test_no_more_pieces_are_made_after_the_os_voice_takes_over(tmp_path):
@@ -192,14 +192,14 @@ def test_no_more_pieces_are_made_after_the_os_voice_takes_over(tmp_path):
         release.set()
     time.sleep(0.3)
     assert len(calls) == 1
-    assert list((tmp_path / "speech").glob("*")) == []
+    assert list((tmp_path / "speech").rglob("*.mp3")) == []
 
 
 def test_old_pieces_are_swept_at_start(tmp_path):
     (tmp_path / "speech").mkdir()
     (tmp_path / "speech" / "old.mp3").write_bytes(b"x")
     sp.speak("Hi there.", "v", "edge", tmp_path / "f", synth=_ok_synth, player=lambda p: None, platform="win32")
-    assert list((tmp_path / "speech").glob("*")) == []
+    assert list((tmp_path / "speech").rglob("*.mp3")) == []
 
 
 def test_a_killed_player_ends_the_reading(tmp_path):
@@ -222,3 +222,32 @@ def test_play_raises_when_the_player_was_killed(monkeypatch):
         sp._play("x.mp3")
     monkeypatch.setattr(sp, "_run", lambda argv, data=None: 0)
     sp._play("x.mp3")
+
+
+def test_each_reading_has_its_own_folder_and_a_live_one_is_not_swept(tmp_path, monkeypatch):
+    other = tmp_path / "speech" / "999999"
+    other.mkdir(parents=True)
+    (other / "piece.mp3").write_bytes(b"x")
+    dead = tmp_path / "speech" / "999998"
+    dead.mkdir(parents=True)
+    (dead / "piece.mp3").write_bytes(b"x")
+    monkeypatch.setattr(sp, "_pid_alive", lambda pid: pid == 999999)
+    sp.speak("Hi there.", "v", "edge", tmp_path / "f", synth=_ok_synth, player=lambda p: None, platform="win32")
+    assert (other / "piece.mp3").exists()
+    assert not dead.exists()
+    assert not (tmp_path / "speech" / str(os.getpid())).exists()
+
+
+def test_a_piece_made_while_cleanup_runs_is_still_removed(tmp_path):
+    played = []
+
+    def player(path):
+        played.append(path)
+        raise sp.PlayerStopped()
+
+    text = " ".join(f"Sentence number {i} is here." for i in range(20))
+    sp.speak(text, "v", "edge", tmp_path / "f", synth=_timed_synth(0.0), player=player,
+             platform="win32", piece_chars=60)
+    import time
+    time.sleep(0.3)
+    assert list((tmp_path / "speech").rglob("*.mp3")) == []

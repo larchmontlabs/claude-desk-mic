@@ -53,7 +53,7 @@ Dictated prompts queue until Claude is idle. The prompt box clears as soon as on
 | `vadLevel` (Whisper voice-detection level) | 0 to 3; higher ignores more background noise Range 0 to 3. | `2` |
 | `sendMode` (How a sentence is sent) | word: build the prompt until you say a send word. pause: send each sentence when you pause. Options: `word`, `pause`. | `word` |
 | `sendWords` (Send words) | Comma-separated words that send the prompt | `send it` |
-| `stopWords` (Stop words) | Said alone, these end Claude's running reply and stop reading aloud (comma list) | `stop, cancel, wait, hold on, never mind` |
+| `stopWords` (Stop words) | Said alone, these end Claude's running reply (comma list) | `stop, cancel, wait, hold on, never mind` |
 | `useWakeWord` (Use a wake word) | Only act on speech that starts with the wake word | `true` |
 | `wakeWords` (Wake words) | Comma-separated wake words | `claude` |
 | `pauseSeconds` (Pause length (seconds)) | Quiet time that ends a sentence (minimum 1; deepgram accepts 1 to 5) Minimum 1. | `3` |

@@ -321,6 +321,8 @@ async function onUtterance($: Ctx, st: State, text: string, unsure = false): Pro
   const isShowing = showsPreview(st)
   const draft = isShowing ? st.preview!.base : await readBox($, st)
   const hadPreview = isShowing && st.preview!.shown !== draft
+  // The person changed the box while this sentence was being heard.
+  const wasTakenOver = st.preview?.paused === true
   st.preview = undefined
   const edits = st.edits
   const nowMs = await $.clock.now()
@@ -345,6 +347,13 @@ async function onUtterance($: Ctx, st: State, text: string, unsure = false): Pro
       plan = { action: { kind: 'nothing' }, awake: plan.awake }
       $.ui.toast('Not sure I heard that right. Say it again.')
     }
+  }
+  if (wasTakenOver && (plan.action.kind === 'fill' || plan.action.kind === 'submit')) {
+    // Leave the box as the person has it: adding the sentence would repeat the
+    // live words already in it. The next sentence works on their text.
+    st.awake = { isAwake: true, lastHeardMs: nowMs }
+    $.ui.toast(`You changed the box while I listened, so I left it as you have it. I heard: "${text}"`)
+    return
   }
   const action = plan.action
   // Whether nobody else touched the box since it was read.

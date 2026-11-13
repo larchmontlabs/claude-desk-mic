@@ -63,7 +63,7 @@
     "stopWords": {
       "type": "string",
       "title": "Stop words",
-      "description": "Said alone, these end Claude's running reply and stop reading aloud (comma list)",
+      "description": "Said alone, these end Claude's running reply (comma list)",
       "default": "stop, cancel, wait, hold on, never mind"
     },
     "useWakeWord": {
