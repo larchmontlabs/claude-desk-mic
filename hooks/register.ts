@@ -14,9 +14,8 @@ import {
   previewText,
   stopWordSaid,
   wakeWordHeard,
-  isEchoOf,
+  personWords,
   ECHO_MEMORY_MS,
-  ECHO_GUARD_MS,
   rulesFrom,
   splitLines,
 } from './rules'
@@ -92,7 +91,9 @@ type State = {
   speech: Speech | undefined
   // What the read-aloud last said (`now`, `prev`), when that piece started and
   // when reading ended, to tell desk-mic's own voice from the person's.
-  echo: { now: string; prev: string; at: number; endedAt: number }
+  echo: { all: string; now: string; at: number; endedAt: number }
+  // The wake word is in the live words of the sentence being heard (status only).
+  hearingWake: boolean
 }
 
 const KILL_TIMEOUT_MS = 10000
@@ -169,7 +170,7 @@ function configFrom(options: Readonly<Record<string, unknown>>): Config {
 async function refresh($: Ctx, st: State): Promise<void> {
   if (st.phase !== 'on') return
   const now = await $.clock.now()
-  const isAwake = st.awake.isAwake && now - st.awake.lastHeardMs <= AWAKE_FOR_MS
+  const isAwake = st.hearingWake || (st.awake.isAwake && now - st.awake.lastHeardMs <= AWAKE_FOR_MS)
   const wake = !st.cfg.rules.useWakeWord ? 'none' : isAwake ? 'awake' : 'asleep'
   $.ui.status(statusText(true, st.listening, st.speaking, st.cfg.rules, st.muteKey, wake, st.cfg.interruptReading))
 }
@@ -224,19 +225,21 @@ export function parsePieceLine(line: string): string | undefined {
 
 /** A piece of the reply is about to play: remember it as possible echo. */
 async function heardOwnVoice($: Ctx, st: State, piece: string): Promise<void> {
-  st.echo = { now: piece, prev: st.echo.now, at: await $.clock.now(), endedAt: Number.POSITIVE_INFINITY }
+  st.echo = { all: `${st.echo.all} ${piece}`, now: piece, at: await $.clock.now(), endedAt: Number.POSITIVE_INFINITY }
 }
 
-/** Whether `text` is desk-mic's own read-aloud coming back through the mic:
- *  the piece playing (or just played), and the one before it while reading
- *  or just after (voice-bridge's _looks_like_echo, with its time limits). */
-function isOwnVoice(st: State, text: string, nowMs: number): boolean {
+/** What the person said in `text`: the read-aloud's own echo taken out, while
+ *  reading or for ECHO_MEMORY_MS after it ended; `text` as is otherwise. */
+function personText(st: State, text: string, nowMs: number): string {
   const e = st.echo
-  const lastSpoken = Math.min(nowMs, e.endedAt)
-  if (e.now === '' || nowMs > Math.max(e.at, lastSpoken) + ECHO_MEMORY_MS) return false
-  if (isEchoOf(text, e.now)) return true
-  const isGuarded = st.speech !== undefined || nowMs - e.endedAt <= ECHO_GUARD_MS
-  return isGuarded && isEchoOf(text, e.prev)
+  if (e.all.trim() === '' || nowMs > Math.max(e.at, Math.min(nowMs, e.endedAt)) + ECHO_MEMORY_MS) return text
+  const rules = st.cfg.rules
+  const single = new Set(
+    [...rules.stopWords, ...(rules.useWakeWord ? rules.wakeWords : [])]
+      .map(w => w.trim().toLowerCase())
+      .filter(w => w !== '' && !/\s/.test(w)),
+  )
+  return personWords(text, e.all, e.now, word => single.has(word.toLowerCase().replace(/[^\p{L}\p{N}]/gu, '')))
 }
 
 /** While a reply is read aloud, these cut it off: a stop word on its own, or
@@ -256,6 +259,7 @@ async function speak($: Ctx, st: State, answer: string): Promise<void> {
     input: answer,
   })
   let finish = () => {}
+  st.echo = { all: '', now: '', at: Number.NEGATIVE_INFINITY, endedAt: Number.POSITIVE_INFINITY }
   const s: Speech = { stream, pid: undefined, isStopped: false, done: new Promise<void>(r => (finish = r)) }
   st.speech = s
   let out = ''
@@ -341,15 +345,13 @@ function showsPreview(st: State): boolean {
   return st.preview !== undefined && !st.preview.paused && st.modText !== undefined
 }
 
-/** The wake word heard in the live words wakes the mic at once, so the status
- *  shows it is listening while the person is still talking. */
+/** The wake word heard in the live words shows at once that the mic is
+ *  listening. Only a finished sentence wakes it: Deepgram can still correct a
+ *  live "Claude" to "cloud". */
 async function noteWakeWord($: Ctx, st: State, text: string): Promise<void> {
-  if (!wakeWordHeard(text, st.cfg.rules)) return
-  const nowMs = await $.clock.now()
-  const wasAwake = st.awake.isAwake && nowMs - st.awake.lastHeardMs <= AWAKE_FOR_MS
-  st.awake = { isAwake: true, lastHeardMs: nowMs }
-  keepAwakeTimer($, st)
-  if (!wasAwake) await refresh($, st)
+  if (st.hearingWake || !wakeWordHeard(text, st.cfg.rules)) return
+  st.hearingWake = true
+  await refresh($, st)
 }
 
 /** Refresh once the awake stretch runs out, so the status asks for the wake word again. */
@@ -361,15 +363,22 @@ function keepAwakeTimer($: Ctx, st: State): void {
 /** Shows the words heard so far in the prompt box, after the draft. An empty
  *  text (the sentence was thrown away) puts the box back as it was. Typing
  *  while live words show pauses them for the rest of the sentence. */
-async function onPartial($: Ctx, st: State, text: string): Promise<void> {
+async function onPartial($: Ctx, st: State, heardText: string): Promise<void> {
+  let text = heardText
   if (text.trim() !== '') {
-    const nowMs = await $.clock.now()
-    if (isOwnVoice(st, text, nowMs)) return
+    text = personText(st, text, await $.clock.now())
+    if (text === '') return
     if (st.speech) {
       // Talking over the reading: cut it off only for a stop word or the wake word.
       if (!cutsReadingOff(st, text)) return
       await stopSpeech($, st).killed
+      if (stopWordSaid(text, st.cfg.rules)) {
+        $.ui.toast('Stopped reading.')
+        return
+      }
     }
+  } else {
+    st.hearingWake = false
   }
   await noteWakeWord($, st, text)
   if (st.preview?.paused) {
@@ -403,8 +412,10 @@ async function dropPreview($: Ctx, st: State): Promise<void> {
 
 /** `unsure`: the speech engine was not sure it heard right, so the sentence
  *  may fill the box but is never sent, stopped or cleared on its own word. */
-async function onUtterance($: Ctx, st: State, text: string, unsure = false): Promise<void> {
-  if (isOwnVoice(st, text, await $.clock.now())) {
+async function onUtterance($: Ctx, st: State, heardText: string, unsure = false): Promise<void> {
+  st.hearingWake = false
+  const text = personText(st, heardText, await $.clock.now())
+  if (text === '') {
     await dropPreview($, st)
     return
   }
@@ -743,7 +754,8 @@ export const register: Register = (on, options) => {
     queued: 0,
     awakeTimer: undefined,
     turnId: undefined,
-    echo: { now: '', prev: '', at: Number.NEGATIVE_INFINITY, endedAt: Number.NEGATIVE_INFINITY },
+    echo: { all: '', now: '', at: Number.NEGATIVE_INFINITY, endedAt: Number.NEGATIVE_INFINITY },
+    hearingWake: false,
     python: '',
     stateDir: '',
     platform: 'win32',

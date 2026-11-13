@@ -10,7 +10,7 @@ import {
   pauseMsFor,
   planUtterance,
   previewText,
-  isEchoOf,
+  personWords,
   wakeWordHeard,
   rulesFrom,
   splitLines,
@@ -320,23 +320,11 @@ test('previewText leaves a stop word out of the box', async () => {
 
 // ---- echo: the mic hearing its own read-aloud (voice-bridge voice_text.is_echo_of) ---
 
-test('isEchoOf matches any whole run of words in what was said', async () => {
-  const said = 'Yes, the tests pass. I pushed the fix to main.'
-  expect(isEchoOf('the tests pass', said)).toBe(true)
-  expect(isEchoOf('pushed the fix', said)).toBe(true)
-  expect(isEchoOf('Yes the tests', said)).toBe(true)
-  expect(isEchoOf('run the tests', said)).toBe(false)
-})
-
-test('isEchoOf never calls a short answer echo', async () => {
-  expect(isEchoOf('yes', 'Yes, the tests pass.')).toBe(false)
-  expect(isEchoOf('stop', 'Stop the server first.')).toBe(false)
-  expect(isEchoOf('the t', 'the tests pass')).toBe(false)
-})
-
-test('isEchoOf lines up on word boundaries', async () => {
-  expect(isEchoOf('run the', 'overrun theatre')).toBe(false)
-  expect(isEchoOf('anything', '')).toBe(false)
+test('personWords lines up on word boundaries and keeps short answers', async () => {
+  const keep = () => false
+  expect(personWords('run the', 'overrun theatre', 'overrun theatre', keep)).toBe('run the')
+  expect(personWords('yes', 'Yes, the tests pass.', 'Yes, the tests pass.', keep)).toBe('')
+  expect(personWords('no', 'Yes, the tests pass.', 'Yes, the tests pass.', keep)).toBe('no')
 })
 
 test('wakeWordHeard finds the wake word at the start only', async () => {
@@ -344,4 +332,20 @@ test('wakeWordHeard finds the wake word at the start only', async () => {
   expect(wakeWordHeard('claude', WAKE_WORD)).toBe(true)
   expect(wakeWordHeard('ask claude', WAKE_WORD)).toBe(false)
   expect(wakeWordHeard('Claude', WORD)).toBe(false)
+})
+
+
+test('personWords keeps only what was not read aloud', async () => {
+  const said = 'Wait, the build finished. It took 1,200 seconds on the main runner.'
+  const keep = (word: string) => ['stop', 'claude'].includes(word.toLowerCase())
+  expect(personWords('the build finished it took', said, said, keep)).toBe('')
+  expect(personWords('the build finished Claude stop', said, said, keep)).toBe('Claude stop')
+  expect(personWords('took 1200 seconds stop', said, said, keep)).toBe('stop')
+  // The start of the piece being read is echo even as one word.
+  expect(personWords('Wait', said, said, keep)).toBe('')
+  // One word off from the reading, alone among echo, is a mishearing, not the person.
+  expect(personWords('the build finished it took 1300 seconds on the main', said, said, keep)).toBe('')
+  expect(personWords('list the PRs', said, said, keep)).toBe('list the PRs')
+  expect(personWords('yes', said, said, keep)).toBe('yes')
+  expect(personWords('anything', '', '', keep)).toBe('anything')
 })

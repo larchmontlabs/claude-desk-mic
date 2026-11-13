@@ -236,31 +236,61 @@ export function wakeWordHeard(text: string, rules: Rules): boolean {
   return rules.useWakeWord && afterWakeWord(text, rules.wakeWords) !== undefined
 }
 
-// Echo: the mic hearing desk-mic's own read-aloud. Ported from voice-bridge
-// voice_text.py (normalize_for_echo, is_echo_of, MIN_ECHO_CHARS, MIN_ECHO_WORDS)
-// and bridge.py (ECHO_MEMORY_SECONDS, ECHO_GUARD_MS defaults).
-export const MIN_ECHO_CHARS = 6
+// Echo: the mic hearing desk-mic's own read-aloud. From voice-bridge: a run
+// of MIN_ECHO_WORDS words inside what was said is echo (voice_text.is_echo_of),
+// and what was said is remembered ECHO_MEMORY_SECONDS (bridge.py). Deepgram's
+// words pile up until a pause, so the reading's echo and the person's words can
+// arrive in one string: the test runs word by word, not on the whole string.
 export const MIN_ECHO_WORDS = 2
-// What was read aloud stops counting as possible echo this long after.
 export const ECHO_MEMORY_MS = 10000
-// The piece before the current one counts only this long after reading ends.
-export const ECHO_GUARD_MS = 1200
 
-function normalizeForEcho(text: string): string {
-  return text
-    .toLowerCase()
-    .replace(/[^\p{L}\p{N}\s]/gu, ' ')
-    .split(/\s+/)
-    .filter(Boolean)
-    .join(' ')
+/** A word as compared with the reading: lowercase, no punctuation ("1,200" is "1200"). */
+function echoKey(word: string): string {
+  return word.toLowerCase().replace(/[^\p{L}\p{N}]/gu, '')
 }
 
-/** True when `text` is a whole run of words inside `spoken` (start, end or
- *  middle). Under MIN_ECHO_CHARS characters or MIN_ECHO_WORDS words it is never
- *  echo: "yes", "no", "stop" are answers even when the reply said them. */
-export function isEchoOf(text: string, spoken: string): boolean {
-  const heard = normalizeForEcho(text)
-  const said = normalizeForEcho(spoken)
-  if (said === '' || heard.length < MIN_ECHO_CHARS || heard.split(' ').length < MIN_ECHO_WORDS) return false
-  return ` ${said} `.includes(` ${heard} `)
+/** What the person said in `text`, with the reading's echo taken out.
+ *  `spoken` is everything read aloud lately; `current` the piece playing.
+ *  A run of MIN_ECHO_WORDS or more words found in `spoken` is echo, and so is
+ *  a text that is just the start of `current` ("Wait" from "Wait, the build").
+ *  Once echo is found, a word left on its own between echo counts only if
+ *  `keep` says so (a stop word, the wake word): alone it is a mishearing. */
+export function personWords(text: string, spoken: string, current: string, keep: (word: string) => boolean): string {
+  const words = text.trim().split(/\s+/).filter(Boolean)
+  const heard = words.map(echoKey)
+  const said = spoken.split(/\s+/).map(echoKey).filter(Boolean)
+  if (words.length === 0 || said.length === 0) return text.trim()
+  const piece = current.split(/\s+/).map(echoKey).filter(Boolean)
+  if (heard.every((word, i) => word === piece[i])) return ''
+  const saidLine = ` ${said.join(' ')} `
+  const isEcho = new Array<boolean>(words.length).fill(false)
+  for (let i = 0; i < words.length; ) {
+    let end = 0
+    for (let j = words.length; j >= i + MIN_ECHO_WORDS; j--) {
+      if (saidLine.includes(` ${heard.slice(i, j).join(' ')} `)) {
+        end = j
+        break
+      }
+    }
+    if (end === 0) {
+      i++
+      continue
+    }
+    isEcho.fill(true, i, end)
+    i = end
+  }
+  if (!isEcho.includes(true)) return text.trim()
+  const kept: string[] = []
+  for (let i = 0; i < words.length; ) {
+    if (isEcho[i]) {
+      i++
+      continue
+    }
+    let j = i
+    while (j < words.length && !isEcho[j]) j++
+    const run = words.slice(i, j)
+    if (run.length >= MIN_ECHO_WORDS || run.every(keep)) kept.push(...run)
+    i = j
+  }
+  return kept.join(' ')
 }

@@ -1287,3 +1287,80 @@ test('its own voice is still known for a while after reading ends', { options: {
   await say(r, UTTER('the fix is on main'))
   expect(r.draft).toBe('the fix is on main')
 })
+
+
+// ---- talking over the reading through speakers: echo and the person in one string ---
+
+const LONG_READING =
+  'Wait, the build finished. It took 1,200 seconds on the main runner, and every test passed. ' +
+  'Claude Code also cleaned up the old branches and pushed the release notes to the team.'
+
+async function readingThis($: Dollar, r: Rig, text: string) {
+  await $.turn.complete(turn(text))
+  await until(() => r.speakers.length === 1, 'the speak spawn')
+  await drain()
+}
+
+test('echo of a long reply, with a word heard a little differently, is not typed or sent', { options: { ...SPEAK, useWakeWord: false, sendMode: 'pause' } }, async ($, on) => {
+  const r = rig(on)
+  await begin($)
+  await micOn($, r)
+  await readingThis($, r, LONG_READING)
+  await say(r, PARTIAL('the build finished it took 1200 seconds on the main runner'))
+  await say(r, UTTER('the build finished it took 1200 seconds on the main runner and every test passed'))
+  expect(r.fills).toEqual([])
+  expect(r.submits).toEqual([])
+  expect(killedReading(r)).toBe(false)
+})
+
+test('"Claude, stop" said over the echo stops the reading', { options: SPEAK }, async ($, on) => {
+  const r = rig(on)
+  await begin($)
+  await micOn($, r)
+  await readingThis($, r, LONG_READING)
+  await say(r, PARTIAL('the build finished it took Claude stop'))
+  expect(killedReading(r)).toBe(true)
+})
+
+test('a bare stop said over the echo stops the reading', { options: SPEAK }, async ($, on) => {
+  const r = rig(on)
+  await begin($)
+  await micOn($, r)
+  await readingThis($, r, LONG_READING)
+  await say(r, UTTER('the build finished it took 1200 seconds stop'))
+  expect(killedReading(r)).toBe(true)
+})
+
+test('a reply that starts with a stop word does not stop itself', { options: SPEAK }, async ($, on) => {
+  const r = rig(on)
+  await begin($)
+  await micOn($, r)
+  await readingThis($, r, LONG_READING)
+  await say(r, PARTIAL('Wait'))
+  await say(r, PARTIAL('Wait, the build'))
+  expect(killedReading(r)).toBe(false)
+})
+
+test('a reply that says the wake word does not wake the mic or stop itself', { options: SPEAK }, async ($, on) => {
+  const r = rig(on)
+  await begin($)
+  await micOn($, r)
+  await readingThis($, r, 'Claude Code cleaned up the old branches.')
+  await say(r, PARTIAL('Claude'))
+  await say(r, PARTIAL('Claude Code cleaned'))
+  expect(killedReading(r)).toBe(false)
+  expect(r.status).not.toContain('listening -')
+})
+
+test('a wake word only in the live words does not wake the mic for the next sentence', { options: { engine: 'whisper' } }, async ($, on) => {
+  const r = rig(on)
+  await begin($)
+  await micOn($, r)
+  await say(r, PARTIAL('Claude'))
+  expect(r.status).toBe('● listening - say "send it" to send')
+  // Deepgram corrected it: the finished sentence has no wake word.
+  await say(r, UTTER('cloud computing is big'))
+  await say(r, UTTER('list the PRs'))
+  expect(r.fills).toEqual([])
+  expect(r.status).toBe('mic on - say "claude" to start')
+})
