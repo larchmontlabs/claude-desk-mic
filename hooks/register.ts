@@ -443,8 +443,12 @@ async function handle($: Ctx, st: State, myRun: number, event: MicEvent): Promis
       return
     case 'state':
       st.listening = event.listening
-      if (!st.listening) await dropPreview($, st)
-      if (!st.listening) st.awake = { ...ASLEEP, lastHeardMs: st.awake.lastHeardMs }
+      if (!st.listening) {
+        await dropPreview($, st)
+        st.awake = { ...ASLEEP, lastHeardMs: st.awake.lastHeardMs }
+        // Muting means quiet: stop any reply being read aloud too.
+        await stopSpeech($, st).killed
+      }
       break
     case 'speaking':
       st.speaking = event.playing

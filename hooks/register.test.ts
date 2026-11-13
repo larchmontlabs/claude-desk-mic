@@ -788,6 +788,17 @@ test('mic off stops speech', { options: SPEAK }, async ($, on) => {
   await until(() => r.speakers[0]!.sawReturn, 'the speak stream to be returned')
 })
 
+test('muting stops speech', { options: SPEAK }, async ($, on) => {
+  const r = rig(on)
+  await begin($)
+  await micOn($, r)
+  await $.turn.complete(turn('a long answer'))
+  await until(() => r.speakers.length === 1, 'the speak spawn')
+  await drain()
+  await say(r, STATE(false))
+  expect(r.runs).toContainEqual(treeKillArgv('win32', 77))
+})
+
 test('a spoken prompt stops speech once submitted', { options: { ...SPEAK, useWakeWord: false } }, async ($, on) => {
   const r = rig(on)
   await begin($)
