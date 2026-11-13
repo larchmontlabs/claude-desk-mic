@@ -161,11 +161,13 @@ def test_args_reach_the_engine(tmp_path):
     made = []
     deps = make_deps(rec, deepgram=stt_factory(rec, made), after_ready=_stop)
     code = listen.main(
-        argv(tmp_path, "--engine", "deepgram", "--pause-ms", "2000", "--keyterm", "claude", "--keyterm", "send it"),
+        argv(tmp_path, "--engine", "deepgram", "--pause-ms", "2000", "--send-word", "send it",
+             "--keyterm", "claude", "--keyterm", "send it"),
         deps,
     )
     assert code == 0
     (stt,) = made
+    assert stt.kwargs["flush_words"] == ["send it"]
     assert stt.kwargs["utterance_end_ms"] == 2000
     assert stt.kwargs["keyterms"] == ["claude", "send it"]
     assert stt.kwargs["sample_rate"] == 16000

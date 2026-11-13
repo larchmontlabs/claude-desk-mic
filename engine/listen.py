@@ -199,6 +199,8 @@ def parse_args(argv=None) -> argparse.Namespace:
     parser.add_argument("--pause-ms", type=int, default=3000, help="quiet time that ends a sentence")
     parser.add_argument("--mute-key", type=_mute_key, default="auto")
     parser.add_argument("--vad-level", type=_vad_level, default=2, help="Whisper voice detection, 0 to 3")
+    parser.add_argument("--send-word", action="append", default=[],
+                        help="a send word: a sentence ending with it is sent at once (deepgram); repeatable")
     parser.add_argument("--keyterm", action="append", default=[], help="a word to listen hard for; repeatable")
     parser.add_argument("--parent-pid", type=_parent_pid, help="stop when this process (Claude Code) exits")
     args = parser.parse_args(argv)
@@ -340,6 +342,7 @@ async def run(args: argparse.Namespace, deps: Deps) -> int:
                     sample_rate=SAMPLE_RATE,
                     channels=CHANNELS,
                     keyterms=list(args.keyterm),
+                    flush_words=list(args.send_word),
                     utterance_end_ms=args.pause_ms,
                     **model,
                 )

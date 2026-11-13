@@ -389,6 +389,8 @@ test('listener args', { options: { deepgramApiKey: 'secret-key' } }, async ($, o
   const terms = argv.flatMap((a, i) => (a === '--keyterm' ? [argv[i + 1]] : []))
   expect(terms).toEqual(['claude', 'send it'])
   expect(argv.slice(-4)).toEqual(['--keyterm', 'claude', '--keyterm', 'send it'])
+  // Word mode: the engine sends the moment it hears the send word.
+  expect(argPair(argv, '--send-word')).toBe('send it')
   expect(argPair(argv, '--parent-pid')).toBe('4242')
   expect(r.spawns[0]!.env?.DEEPGRAM_API_KEY).toBe('secret-key')
   expect(argv.some(a => a.includes('secret-key'))).toBe(false)
@@ -1178,4 +1180,12 @@ test("the mod's own fill, as the engine reports it, keeps the box the mod's", { 
   await ($.prompt as unknown as Raise).change({ text: 'list the PRs', cursor: 12, origin: { kind: 'plugin', name: 'desk-mic' } })
   await say(r, UTTER('and the stale ones'))
   expect(r.draft).toBe('list the PRs and the stale ones')
+})
+
+
+test('pause mode passes no send word to the engine', { options: { deepgramApiKey: 'k', sendMode: 'pause' } }, async ($, on) => {
+  const r = rig(on)
+  await begin($)
+  await micOn($, r)
+  expect(r.spawns[0]!.argv).not.toContain('--send-word')
 })

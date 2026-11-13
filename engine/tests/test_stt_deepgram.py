@@ -259,3 +259,47 @@ def test_no_speech_text_in_the_info_log(caplog):
     run(go())
     assert h.calls == [("private", 0.9)]
     assert not any("private" in r.getMessage() for r in caplog.records if r.levelno >= logging.INFO)
+
+
+# -- The send word sends at once, without waiting for the pause -------------------
+
+class SendHarness(Harness):
+    def __init__(self, flush_words):
+        super().__init__()
+        self.stt = DeepgramSTT(self.stt._on_utterance_full, self.stt._on_closed,
+                               on_partial=self.stt._on_partial, flush_words=flush_words)
+
+
+def test_a_send_word_heard_at_the_end_flushes_at_once():
+    h = SendHarness(["send it"])
+
+    async def go():
+        await h.stt.handle_transcript(result([("what", 0.0, 0.2), ("time", 0.3, 0.5)], 0.9, final=False))
+        assert h.calls == []
+        await h.stt.handle_transcript(result([("what", 0.0, 0.2), ("time", 0.3, 0.5), ("send", 0.6, 0.8), ("it.", 0.8, 0.9)], 0.9, final=False))
+        # Deepgram's final for the same words, then the pause: nothing more.
+        await h.stt.handle_transcript(result([("what", 0.0, 0.2), ("time", 0.3, 0.5), ("send", 0.6, 0.8), ("it", 0.8, 0.9)], 0.95))
+        await h.stt.handle_utterance_end(NS(last_word_end=0.9))
+
+    run(go())
+    assert h.calls == [("what time send it.", 0.9)]
+
+
+def test_a_send_word_inside_a_word_or_mid_sentence_does_not_flush():
+    h = SendHarness(["send it"])
+
+    async def go():
+        await h.stt.handle_transcript(result([("resend", 0.0, 0.3), ("it", 0.3, 0.5), ("now", 0.6, 0.8)], 0.9, final=False))
+
+    run(go())
+    assert h.calls == []
+
+
+def test_no_flush_words_waits_for_the_pause():
+    h = Harness()
+
+    async def go():
+        await h.stt.handle_transcript(result([("send", 0.0, 0.2), ("it", 0.2, 0.4)], 0.9, final=False))
+
+    run(go())
+    assert h.calls == []

@@ -517,6 +517,7 @@ async function start($: Ctx, st: State, myRun: number, pauseMs: number): Promise
     '--parent-pid',
     String(py.sessionPid),
     ...(cfg.engine === 'whisper' ? ['--model', cfg.whisperModel] : []),
+    ...(cfg.rules.mode === 'word' ? cfg.rules.sendWords.flatMap(word => ['--send-word', word]) : []),
     ...keyterms(cfg.rules).flatMap(term => ['--keyterm', term]),
   ]
   // The key goes only in the child's environment, never argv.

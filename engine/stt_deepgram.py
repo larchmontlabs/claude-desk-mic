@@ -61,6 +61,14 @@ def build_client_options() -> DeepgramClientOptions:
     return DeepgramClientOptions(options={"keepalive": "true"})
 
 
+def _tokens(text: str) -> list[str]:
+    """Lowercase words without the punctuation around them, for matching a
+    send word at the end of what was heard ("send it." ends with "send it")."""
+    import re
+
+    return [t for t in (re.sub(r"^\W+|\W+$", "", w) for w in text.lower().split()) if t]
+
+
 class DeepgramSTT:
     def __init__(
         self,
@@ -73,8 +81,12 @@ class DeepgramSTT:
         utterance_end_ms: int = 3000,
         model: str = MODEL,
         on_partial: Callable[[str], Awaitable[None]] | None = None,
+        flush_words: list[str] | None = None,
     ):
         self._on_utterance_full = on_utterance_full
+        # Send words: a sentence that ends with one is finished at once, not
+        # after utterance_end_ms of quiet.
+        self._flush_words = [_tokens(w) for w in (flush_words or []) if _tokens(w)]
         self._on_partial = on_partial
         self._on_closed = on_closed
         self._encoding = encoding
@@ -125,6 +137,9 @@ class DeepgramSTT:
         except Exception as exc:
             log.debug("STT message parse error: %s", exc)
             return
+        if self._ends_with_flush_word():
+            await self._flush(max(w["end"] for w in self._words), "send word")
+            return
         # The words heard so far in this sentence, so the prompt box can show
         # them while the person is still talking.
         if self._on_partial is not None:
@@ -132,10 +147,19 @@ class DeepgramSTT:
             if text:
                 await self._on_partial(text)
 
+    def _ends_with_flush_word(self) -> bool:
+        heard = [t for w in self._words for t in _tokens(w["text"])]
+        return any(len(heard) >= len(word) and heard[-len(word):] == word for word in self._flush_words)
+
     async def handle_utterance_end(self, utterance_end) -> None:
         last_word_end = getattr(utterance_end, "last_word_end", None)
         if last_word_end is None or last_word_end < 0:
             return
+        await self._flush(last_word_end, "UtteranceEnd")
+
+    async def _flush(self, last_word_end: float, why: str) -> None:
+        """Send the pending words up to last_word_end as one sentence; later
+        results for those words (a final after an interim) are ignored."""
         flushed = [w for w in self._words if w["end"] <= last_word_end]
         if not flushed:
             return
@@ -146,7 +170,7 @@ class DeepgramSTT:
             return
         # Conservative: the weakest result sets the confidence.
         confidence = min(w["confidence"] for w in flushed)
-        log.info("STT UtteranceEnd firing: %d chars (confidence=%.2f)", len(text), confidence)
+        log.info("STT %s firing: %d chars (confidence=%.2f)", why, len(text), confidence)
         log.debug("STT text: %r", text)
         await self._on_utterance_full(text, confidence)
 
