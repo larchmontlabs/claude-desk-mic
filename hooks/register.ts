@@ -62,9 +62,10 @@ type State = {
   muteKey: string | null
   muteKeyProblem: string
   awake: Awake
-  // Live words on show in the box: what the box held before them, and what
-  // the mod put there. Gone once the sentence is finished.
-  preview: { base: string; shown: string } | undefined
+  // Live words on show in the box: what the box held before them, and every
+  // text the mod put there for this sentence (a read of the box can lag a
+  // fill, so it may show any of them). Gone once the sentence is finished.
+  preview: { base: string; shown: Set<string> } | undefined
   awakeTimer: { cancel: () => void } | undefined
   // Learned at start; speak-back needs them too.
   python: string
@@ -239,9 +240,14 @@ ${detail}
   void stopSpeech($, st).killed
 }
 
+/** Whether the box shows only what the mod put there for this sentence. */
+function isOurs(st: State, boxText: string): boolean {
+  return st.preview !== undefined && (boxText === st.preview.base || st.preview.shown.has(boxText))
+}
+
 /** The box's text without the mod's live words, if they are still what it shows. */
 function draftUnderPreview(st: State, boxText: string): string {
-  return st.preview && boxText === st.preview.shown ? st.preview.base : boxText
+  return st.preview && isOurs(st, boxText) ? st.preview.base : boxText
 }
 
 /** Shows the words heard so far in the prompt box, after the draft. An empty
@@ -251,16 +257,19 @@ async function onPartial($: Ctx, st: State, text: string): Promise<void> {
   const base = draftUnderPreview(st, box.text)
   const shown = text.trim() === '' ? undefined : previewText(text, st.cfg.rules, base, st.awake, await $.clock.now())
   if (shown === undefined) {
-    if (st.preview && box.text === st.preview.shown) await $.prompt.fill({ text: base, mode: 'replace' })
+    if (isOurs(st, box.text) && box.text !== base) await $.prompt.fill({ text: base, mode: 'replace' })
     st.preview = undefined
     return
   }
+  // Keep the texts already shown for this sentence unless someone else changed the box.
+  const seen = st.preview && isOurs(st, box.text) ? st.preview.shown : new Set<string>()
+  seen.add(shown)
   if (shown === box.text) {
-    st.preview = { base, shown }
+    st.preview = { base, shown: seen }
     return
   }
   const filled = await $.prompt.fill({ text: shown, mode: 'replace' })
-  st.preview = filled.isFilled ? { base, shown } : undefined
+  st.preview = filled.isFilled ? { base, shown: seen } : undefined
 }
 
 /** Takes the live words out of the box, if they are still there. */
@@ -268,13 +277,14 @@ async function dropPreview($: Ctx, st: State): Promise<void> {
   if (!st.preview) return
   const preview = st.preview
   st.preview = undefined
-  if ((await $.prompt.read()).text === preview.shown) await $.prompt.fill({ text: preview.base, mode: 'replace' })
+  const now = (await $.prompt.read()).text
+  if (now !== preview.base && preview.shown.has(now)) await $.prompt.fill({ text: preview.base, mode: 'replace' })
 }
 
 async function onUtterance($: Ctx, st: State, text: string): Promise<void> {
   const read = await $.prompt.read()
   const box = { ...read, text: draftUnderPreview(st, read.text) }
-  const hadPreview = st.preview !== undefined && read.text === st.preview.shown
+  const hadPreview = isOurs(st, read.text) && read.text !== box.text
   st.preview = undefined
   const plan = planUtterance(text, st.cfg.rules, box.text, st.awake, await $.clock.now())
   const action = plan.action

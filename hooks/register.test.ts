@@ -75,6 +75,8 @@ type RigOptions = {
   pipHangs?: boolean
   fillBusy?: boolean
   fillThrows?: boolean
+  // prompt.read lags one fill behind, as the real prompt box can.
+  staleReads?: boolean
   submit?: (text: string) => Promise<{ text: string }>
 }
 
@@ -96,6 +98,7 @@ function rig(on: On, o: RigOptions = {}) {
     listeners: [] as Feed[],
     speakers: [] as Speaker[],
     draft: '',
+    shownBefore: '',
     fills: [] as string[],
     submits: [] as { text: string; origin: unknown }[],
     writes: {} as Record<string, string>,
@@ -145,10 +148,14 @@ function rig(on: On, o: RigOptions = {}) {
     }
     return ok()
   })
-  on('prompt.read', () => ({ value: { text: r.draft, cursor: r.draft.length } }))
+  on('prompt.read', () => {
+    const text = o.staleReads ? r.shownBefore : r.draft
+    return { value: { text, cursor: text.length } }
+  })
   on('prompt.fill', (_, e) => {
     if (o.fillThrows) throw new Error('fill denied by another hook')
     if (o.fillBusy) return { isFilled: false }
+    r.shownBefore = r.draft
     r.draft = e.text
     r.fills.push(e.text)
     return { isFilled: true }
@@ -848,4 +855,19 @@ test('text typed into the box is not overwritten by live words', { options: { en
   r.draft = 'typed by hand'
   await say(r, PARTIAL('half a sentence'))
   expect(r.draft).toBe('typed by hand half a sentence')
+})
+
+
+test('live words are not piled up when the box is slow to update', { options: { engine: 'whisper' } }, async ($, on) => {
+  const r = rig(on, { staleReads: true })
+  await begin($)
+  await micOn($, r)
+  await say(r, PARTIAL('Claude, does this'))
+  await say(r, PARTIAL('Claude, does this use'))
+  await say(r, PARTIAL('Claude, does this use the same'))
+  await say(r, PARTIAL('Claude, does this use the same version'))
+  expect(r.draft).toBe('does this use the same version')
+  await say(r, UTTER('Claude, does this use the same version, send it'))
+  expect(r.submits.map(s => s.text)).toEqual(['does this use the same version'])
+  expect(r.draft).toBe('')
 })
