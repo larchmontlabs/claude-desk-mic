@@ -154,7 +154,10 @@ def _synth_pieces(synth, pieces, voice, folder, stop):
         for i, piece in enumerate(pieces):
             if stop.is_set():
                 break
-            fd, out_path = tempfile.mkstemp(suffix=".mp3", dir=folder)
+            try:
+                fd, out_path = tempfile.mkstemp(suffix=".mp3", dir=folder)
+            except OSError:
+                break  # the reading ended and removed its folder
             os.close(fd)
             try:
                 synth(piece, voice, out_path)
