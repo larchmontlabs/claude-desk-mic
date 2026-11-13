@@ -15,7 +15,7 @@ import {
   stopWordSaid,
   wakeWordHeard,
   personWords,
-  ECHO_MEMORY_MS,
+  ECHO_GUARD_MS,
   rulesFrom,
   splitLines,
 } from './rules'
@@ -96,6 +96,11 @@ type State = {
   echo: { all: string; now: string; at: number; endedAt: number }
   // The wake word is in the live words of the sentence being heard (status only).
   hearingWake: boolean
+  // The reading the echo record belongs to.
+  echoOwner: Speech | undefined
+  // A stop word in the live words just stopped the reading: the finished
+  // sentence that carries it needs no second report.
+  stoppedFromLiveWords: boolean
 }
 
 const KILL_TIMEOUT_MS = 10000
@@ -231,25 +236,22 @@ async function heardOwnVoice($: Ctx, st: State, piece: string): Promise<void> {
   st.echo = { all: `${st.echo.all} ${piece}`, now: piece, at: await $.clock.now(), endedAt: Number.POSITIVE_INFINITY }
 }
 
-/** What the person said in `text`: the read-aloud's own echo taken out, while
- *  reading or for ECHO_MEMORY_MS after it ended; `text` as is otherwise. */
+/** What the person said in `text`: the read-aloud's own echo taken off the
+ *  front, while a reading plays and for ECHO_GUARD_MS after it ends (echo is
+ *  only possible then); `text` as is otherwise. */
 function personText(st: State, text: string, nowMs: number): string {
   const e = st.echo
-  if (e.all.trim() === '' || nowMs > Math.max(e.at, Math.min(nowMs, e.endedAt)) + ECHO_MEMORY_MS) return text
-  const rules = st.cfg.rules
-  const single = new Set(
-    [...rules.stopWords, ...(rules.useWakeWord ? rules.wakeWords : [])]
-      .map(w => w.trim().toLowerCase())
-      .filter(w => w !== '' && !/\s/.test(w)),
-  )
-  return personWords(text, e.all, e.now, word => single.has(word.toLowerCase().replace(/[^\p{L}\p{N}]/gu, '')))
+  const isEchoPossible = st.speech !== undefined || nowMs - e.endedAt <= ECHO_GUARD_MS
+  if (e.all.trim() === '' || !isEchoPossible) return text
+  return personWords(text, e.all, e.now)
 }
 
-/** While a reply is read aloud, these cut it off: a stop word on its own, or
- *  a sentence starting with the wake word (any sentence when that is off). */
+/** While a reply is read aloud, only these cut it off: a stop word on its
+ *  own, or a sentence starting with the wake word. With the wake word off that
+ *  leaves the stop words, so echo the mic heard differently can never be taken
+ *  for a prompt. */
 function cutsReadingOff(st: State, text: string): boolean {
-  const rules = st.cfg.rules
-  return stopWordSaid(text, rules) || wakeWordHeard(text, rules) || (!rules.useWakeWord && text.trim().split(/\s+/).length >= 2)
+  return stopWordSaid(text, st.cfg.rules) || wakeWordHeard(text, st.cfg.rules)
 }
 
 /** Reads a reply aloud; a reply still playing is stopped first. Runs in the
@@ -264,6 +266,7 @@ async function speak($: Ctx, st: State, answer: string): Promise<void> {
   let finish = () => {}
   st.echo = { all: '', now: '', at: Number.NEGATIVE_INFINITY, endedAt: Number.POSITIVE_INFINITY }
   const s: Speech = { stream, pid: undefined, isStopped: false, done: new Promise<void>(r => (finish = r)) }
+  st.echoOwner = s
   st.speech = s
   let out = ''
   try {
@@ -286,7 +289,8 @@ async function speak($: Ctx, st: State, answer: string): Promise<void> {
   }
   if (st.speech === s) st.speech = undefined
   try {
-    st.echo.endedAt = await $.clock.now()
+    // Only this reading's end counts: a newer reading owns the echo record now.
+    if (st.speech === undefined && st.echoOwner === s) st.echo.endedAt = await $.clock.now()
   } catch {
     // the session is closing; nothing more will be heard
   }
@@ -376,6 +380,7 @@ async function onPartial($: Ctx, st: State, heardText: string): Promise<void> {
       if (!cutsReadingOff(st, text)) return
       await stopSpeech($, st).killed
       if (stopWordSaid(text, st.cfg.rules)) {
+        st.stoppedFromLiveWords = true
         $.ui.toast('Stopped reading.')
         return
       }
@@ -422,8 +427,18 @@ async function onUtterance($: Ctx, st: State, heardText: string, unsure = false)
     await dropPreview($, st)
     return
   }
+  const wasStoppedFromLiveWords = st.stoppedFromLiveWords
+  st.stoppedFromLiveWords = false
+  if (wasStoppedFromLiveWords && stopWordSaid(text, st.cfg.rules)) {
+    await dropPreview($, st)
+    return
+  }
   if (st.speech) {
-    if (!cutsReadingOff(st, text)) return
+    // Not sure of it, or not a stop word or the wake word: the reading goes on.
+    if (unsure || !cutsReadingOff(st, text)) {
+      await dropPreview($, st)
+      return
+    }
     await stopSpeech($, st).killed
     if (stopWordSaid(text, st.cfg.rules)) {
       await dropPreview($, st)
@@ -563,6 +578,7 @@ async function handle($: Ctx, st: State, myRun: number, event: MicEvent): Promis
       st.listening = event.listening
       if (!st.listening) {
         await dropPreview($, st)
+        st.hearingWake = false
         st.awake = { ...ASLEEP, lastHeardMs: st.awake.lastHeardMs }
         // Muting means quiet: stop any reply being read aloud too.
         await stopSpeech($, st).killed
@@ -760,6 +776,8 @@ export const register: Register = (on, options) => {
     turnId: undefined,
     echo: { all: '', now: '', at: Number.NEGATIVE_INFINITY, endedAt: Number.NEGATIVE_INFINITY },
     hearingWake: false,
+    echoOwner: undefined,
+    stoppedFromLiveWords: false,
     python: '',
     stateDir: '',
     platform: 'win32',

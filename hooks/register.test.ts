@@ -816,14 +816,14 @@ test('muting stops speech', { options: SPEAK }, async ($, on) => {
   expect(r.runs).toContainEqual(treeKillArgv('win32', 77))
 })
 
-test('a spoken prompt stops speech once submitted', { options: { ...SPEAK, useWakeWord: false } }, async ($, on) => {
+test('a spoken prompt stops speech once submitted', { options: SPEAK }, async ($, on) => {
   const r = rig(on)
   await begin($)
   await micOn($, r)
   await $.turn.complete(turn('a long answer'))
   await until(() => r.speakers.length === 1, 'the speak spawn')
   await drain()
-  await say(r, UTTER('run the tests send it'))
+  await say(r, UTTER('Claude, run the tests send it'))
   await until(() => r.submits.length === 1, 'the submit')
   expect(r.runs).toContainEqual(treeKillArgv('win32', 77))
   await until(() => r.speakers[0]!.sawReturn, 'the speak stream to be returned')
@@ -1378,4 +1378,74 @@ test('a blank micDevice uses the default mic', { options: { deepgramApiKey: 'k' 
   await begin($)
   await micOn($, r)
   expect(r.spawns[0]!.argv).not.toContain('--device')
+})
+
+
+// ---- review of the published echo work: the person's words are never eaten ---
+
+const REPLY = 'I pushed the release notes to the team and opened the PR for the main branch.'
+
+
+test("the person's words after a reading are kept whole", { options: { ...SPEAK, sendMode: 'pause', interruptReading: false } }, async ($, on) => {
+  const r = rig(on)
+  await begin($)
+  await micOn($, r)
+  await readingThis($, r, REPLY)
+  r.speakers[0]!.killed.resolve()
+  await drain()
+  await r.clock.advance(3000)
+  await say(r, UTTER('Claude, merge the PR and delete the main branch'))
+  expect(r.submits.map(s => s.text)).toEqual(['merge the PR and delete the main branch'])
+})
+
+test('talking over the reading keeps every word after the echo', { options: SPEAK }, async ($, on) => {
+  const r = rig(on)
+  await begin($)
+  await micOn($, r)
+  await readingThis($, r, REPLY)
+  await say(r, UTTER('I pushed the release notes Claude, merge the PR and delete the main branch'))
+  expect(killedReading(r)).toBe(true)
+  expect(r.draft).toBe('merge the PR and delete the main branch')
+})
+
+test('with the wake word off, only a stop word acts during the reading', { options: { ...SPEAK, useWakeWord: false, sendMode: 'pause' } }, async ($, on) => {
+  const r = rig(on)
+  await begin($)
+  await micOn($, r)
+  await readingThis($, r, LONG_READING)
+  await say(r, PARTIAL('wait the build finished it took one thousand two hundred seconds on the main runner'))
+  await say(r, UTTER('wait the build finished it took one thousand two hundred seconds on the main runner and every test passed'))
+  expect(killedReading(r)).toBe(false)
+  expect(r.submits).toEqual([])
+  expect(r.fills).toEqual([])
+})
+
+test('"listening" clears when the mic is muted', { options: { engine: 'whisper' } }, async ($, on) => {
+  const r = rig(on)
+  await begin($)
+  await micOn($, r)
+  await say(r, PARTIAL('Claude'))
+  await say(r, STATE(false))
+  await say(r, STATE(true))
+  expect(r.status).toBe('mic on - say "claude" to start')
+})
+
+test('a stop caught in the live words is not reported twice', { options: { ...SPEAK, useWakeWord: false } }, async ($, on) => {
+  const r = rig(on)
+  await begin($)
+  await micOn($, r)
+  await reading($, r)
+  await say(r, PARTIAL('stop'))
+  await say(r, UTTER('stop'))
+  expect(r.toasts.filter(t => t.includes('Stopped reading.')).length).toBe(1)
+  expect(r.toasts.some(t => t.includes('Nothing to stop'))).toBe(false)
+})
+
+test('an unsure stop does not cut the reading off', { options: SPEAK }, async ($, on) => {
+  const r = rig(on)
+  await begin($)
+  await micOn($, r)
+  await reading($, r)
+  await say(r, UNSURE('stop'))
+  expect(killedReading(r)).toBe(false)
 })

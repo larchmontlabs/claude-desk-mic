@@ -326,3 +326,8 @@ def test_an_early_send_uses_the_confidence_of_confirmed_words():
 
     run(go())
     assert h.calls == [("what time send it", 0.8)]
+
+
+def test_numbers_come_back_as_digits_to_match_the_reading():
+    # The reading has "1,200"; without numerals Deepgram says "one thousand two hundred".
+    assert build_live_options("linear16", 16000, 1).numerals is True

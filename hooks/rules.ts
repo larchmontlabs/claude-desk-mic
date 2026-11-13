@@ -238,24 +238,27 @@ export function wakeWordHeard(text: string, rules: Rules): boolean {
 
 // Echo: the mic hearing desk-mic's own read-aloud. From voice-bridge: a run
 // of MIN_ECHO_WORDS words inside what was said is echo (voice_text.is_echo_of),
-// and what was said is remembered ECHO_MEMORY_SECONDS (bridge.py). Deepgram's
-// words pile up until a pause, so the reading's echo and the person's words can
-// arrive in one string: the test runs word by word, not on the whole string.
+// and echo is possible only while the reading plays and for ECHO_GUARD_MS after
+// (bridge.py's _DEFAULT_ECHO_GUARD_MS). Deepgram's words pile up until a pause,
+// so the echo and the person's words can arrive in one string: the echo is
+// what comes first (the reading was playing before the person spoke), and the
+// person's words, once they start, are kept whole.
 export const MIN_ECHO_WORDS = 2
-export const ECHO_MEMORY_MS = 10000
+export const ECHO_GUARD_MS = 1200
 
 /** A word as compared with the reading: lowercase, no punctuation ("1,200" is "1200"). */
 function echoKey(word: string): string {
   return word.toLowerCase().replace(/[^\p{L}\p{N}]/gu, '')
 }
 
-/** What the person said in `text`, with the reading's echo taken out.
- *  `spoken` is everything read aloud lately; `current` the piece playing.
- *  A run of MIN_ECHO_WORDS or more words found in `spoken` is echo, and so is
- *  a text that is just the start of `current` ("Wait" from "Wait, the build").
- *  Once echo is found, a word left on its own between echo counts only if
- *  `keep` says so (a stop word, the wake word): alone it is a mishearing. */
-export function personWords(text: string, spoken: string, current: string, keep: (word: string) => boolean): string {
+/** What the person said in `text`, with the reading's echo taken off the
+ *  front. `spoken` is everything read aloud this reading, `current` the piece
+ *  playing. From the start, runs of MIN_ECHO_WORDS or more words found in
+ *  `spoken` are echo, and so is one misheard word between two such runs; the
+ *  first other word starts the person's words, and from there nothing is
+ *  removed. A text that is just the start of `current` ("Wait" from "Wait, the
+ *  build") is echo too. */
+export function personWords(text: string, spoken: string, current: string): string {
   const words = text.trim().split(/\s+/).filter(Boolean)
   const heard = words.map(echoKey)
   const said = spoken.split(/\s+/).map(echoKey).filter(Boolean)
@@ -263,34 +266,27 @@ export function personWords(text: string, spoken: string, current: string, keep:
   const piece = current.split(/\s+/).map(echoKey).filter(Boolean)
   if (heard.every((word, i) => word === piece[i])) return ''
   const saidLine = ` ${said.join(' ')} `
-  const isEcho = new Array<boolean>(words.length).fill(false)
-  for (let i = 0; i < words.length; ) {
-    let end = 0
-    for (let j = words.length; j >= i + MIN_ECHO_WORDS; j--) {
-      if (saidLine.includes(` ${heard.slice(i, j).join(' ')} `)) {
-        end = j
-        break
-      }
+  const echoRunAt = (start: number): number => {
+    for (let end = words.length; end >= start + MIN_ECHO_WORDS; end--) {
+      if (saidLine.includes(` ${heard.slice(start, end).join(' ')} `)) return end
     }
-    if (end === 0) {
-      i++
+    return 0
+  }
+  let i = 0
+  while (i < words.length) {
+    const end = echoRunAt(i)
+    if (end > 0) {
+      i = end
       continue
     }
-    isEcho.fill(true, i, end)
-    i = end
-  }
-  if (!isEcho.includes(true)) return text.trim()
-  const kept: string[] = []
-  for (let i = 0; i < words.length; ) {
-    if (isEcho[i]) {
-      i++
+    // One misheard word inside the echo ("1300" for "1,200"): skip it only when
+    // echo was already found before it and goes on right after it.
+    const after = i > 0 ? echoRunAt(i + 1) : 0
+    if (after > 0) {
+      i = after
       continue
     }
-    let j = i
-    while (j < words.length && !isEcho[j]) j++
-    const run = words.slice(i, j)
-    if (run.length >= MIN_ECHO_WORDS || run.every(keep)) kept.push(...run)
-    i = j
+    break
   }
-  return kept.join(' ')
+  return words.slice(i).join(' ')
 }

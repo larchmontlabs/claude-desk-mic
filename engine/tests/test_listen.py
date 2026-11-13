@@ -678,3 +678,42 @@ def test_the_speaking_check_runs_at_most_every_200_ms():
         now[0] = i * 0.05
         listener.audio_callback(audio(), 160, None, None)
     assert calls == [0.0, 0.2, 0.4]
+
+
+def test_a_named_mic_that_cannot_open_at_16_khz_is_skipped(tmp_path):
+    rec = Recorder()
+    devices = [
+        {"name": "Microphone (Realtek HD Audio Mic input)", "max_input_channels": 2},
+        {"name": "Microphone (Realtek HD Audio Mic input)", "max_input_channels": 2},
+    ]
+    sd = FakeSD(rec, devices=devices, default_in=0)
+
+    def check(device=None, samplerate=None, channels=None, dtype=None):
+        if device == 0:
+            raise ValueError("Invalid sample rate")
+
+    sd.check_input_settings = check
+    deps = make_deps(rec, sd=sd, after_ready=_stop)
+    listen.main(argv(tmp_path, "--engine", "deepgram", "--device", "realtek"), deps)
+    assert sd.streams[0].kwargs["device"] == 1
+
+
+def test_the_no_match_list_names_each_usable_mic_once(tmp_path):
+    rec = Recorder()
+    devices = [
+        {"name": "Microphone (Jabra SPEAK 510 USB)", "max_input_channels": 1},
+        {"name": "Microphone (Jabra SPEAK 510 USB)", "max_input_channels": 1},
+        {"name": "Microphone (Lumina Camera - Raw)", "max_input_channels": 1},
+    ]
+    sd = FakeSD(rec, devices=devices, default_in=0)
+
+    def check(device=None, samplerate=None, channels=None, dtype=None):
+        if device == 2:
+            raise ValueError("Invalid sample rate")
+
+    sd.check_input_settings = check
+    deps = make_deps(rec, sd=sd, after_ready=_stop)
+    listen.main(argv(tmp_path, "--engine", "deepgram", "--device", "blue yeti"), deps)
+    (err,) = [e for e in events(deps) if e["type"] == "error"]
+    assert err["message"].count("Jabra SPEAK 510") == 1
+    assert "Lumina" not in err["message"]

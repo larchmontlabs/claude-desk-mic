@@ -261,12 +261,27 @@ def _input_device(sd, wanted: str = ""):
         )
     wanted = wanted.strip()
     if wanted:
-        inputs = [(i, d) for i, d in enumerate(devices) if d.get("max_input_channels", 1) > 0]
+        # Each mic is listed once per audio system; only some of them open at
+        # 16 kHz mono, so a mic counts only where it can be opened that way.
+        check = getattr(sd, "check_input_settings", None)
+
+        def usable(i):
+            if check is None:
+                return True
+            try:
+                check(device=i, samplerate=SAMPLE_RATE, channels=CHANNELS, dtype="float32")
+                return True
+            except Exception:
+                return False
+
+        inputs = [(i, d) for i, d in enumerate(devices) if d.get("max_input_channels", 1) > 0 and usable(i)]
         for i, d in inputs:
             if wanted.lower() in str(d["name"]).lower():
                 return i, str(d["name"])
-        # Windows also lists driver-internal names ("@System32\...", "Input ()"); leave those out.
+        # Windows also lists driver-internal names ("@System32\...", "Input ()") and
+        # names cut short by an older audio system; leave those out.
         readable = {str(d["name"]) for _, d in inputs if "@" not in str(d["name"]) and not str(d["name"]).endswith("()")}
+        readable = {n for n in readable if not any(other != n and other.startswith(n) for other in readable)}
         names = ", ".join(sorted(readable)) or "none"
         raise _StageError(
             "device",

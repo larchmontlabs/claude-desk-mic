@@ -48,6 +48,9 @@ def build_live_options(
         vad_events=True,  # enables SpeechStarted + UtteranceEnd
         utterance_end_ms=str(utterance_end_ms),
         endpointing=False,  # disable silence-based endpointing
+        # Digits, not words, for numbers: what a reply read aloud shows ("1,200")
+        # and what a person dictates into a prompt.
+        numerals=True,
         **keyterm_options(model, keyterms),
     )
 
