@@ -160,6 +160,12 @@ function rig(on: On, o: RigOptions = {}) {
     const text = o.staleReads ? r.shownBefore : r.draft
     return { value: { text, cursor: text.length } }
   })
+  // The engine beneath: an edit leaves the spliced text in the box; a change only reports.
+  on('prompt.edit', (_, e) => {
+    const text = e.text.slice(0, e.start) + e.inputText + e.text.slice(e.end)
+    return { text, cursor: e.start + e.inputText.length }
+  })
+  on('prompt.change', (_, e) => ({ text: e.text }))
   on('prompt.fill', (_, e) => {
     if (o.fillThrows) throw new Error('fill denied by another hook')
     if (o.fillBusy) return { isFilled: false }
@@ -239,6 +245,24 @@ async function micOn($: Dollar, r: Rig, muteKey: string | null = 'Right Ctrl') {
   expect(await mic($, 'on')).toMatch(/Mic starting/)
   await until(() => r.listeners.length > before, 'the listener spawn')
   await say(r, READY(muteKey))
+}
+
+/** prompt.edit and prompt.change are events the engine raises, not calls on
+ *  a test's typed `$`; the kit's `$` still raises them by name. */
+type Raise = { edit: (e: unknown) => Promise<unknown>; change: (e: unknown) => Promise<unknown> }
+
+/** The person types: the engine's prompt.edit, as the composer raises it,
+ *  replacing the whole box with `text`. */
+async function typeInBox($: Dollar, r: Rig, text: string) {
+  const before = r.draft
+  await ($.prompt as unknown as Raise).edit({ origin: { kind: 'composer' }, text: before, cursor: before.length, start: 0, end: before.length, inputText: text })
+  r.draft = text
+}
+
+/** Something other than the mod empties the box (a typed send, a clear). */
+async function boxCleared($: Dollar, r: Rig) {
+  r.draft = ''
+  await ($.prompt as unknown as Raise).change({ text: '', cursor: 0, origin: { kind: 'clear' } })
 }
 
 /** One listener line, then wait for the mod to have handled it. */
@@ -876,7 +900,7 @@ test('text typed into the box is not overwritten by live words', { options: { en
   await begin($)
   await micOn($, r)
   await say(r, PARTIAL('half a'))
-  r.draft = 'typed by hand'
+  await typeInBox($, r, 'typed by hand')
   await say(r, PARTIAL('half a sentence'))
   // Typing during live words pauses them, so no keystroke is overwritten.
   expect(r.draft).toBe('typed by hand')
@@ -1069,4 +1093,62 @@ test('the env key is not in the listener argv', { options: { engine: 'deepgram' 
   await mic($)
   await until(() => r.listeners.length === 1, 'the listener spawn')
   expect(r.spawns[0]!.argv.join(' ')).not.toContain('env-key')
+})
+
+
+// ---- the box as the engine reports it: a person's edits always win ---------
+
+test('text the person deleted by hand never comes back', { options: { engine: 'whisper', useWakeWord: false } }, async ($, on) => {
+  const r = rig(on, { staleReads: true })
+  await begin($)
+  await micOn($, r)
+  await say(r, UTTER('delete all branches'))
+  expect(r.draft).toBe('delete all branches')
+  await typeInBox($, r, '')
+  await say(r, UTTER('list the PRs send it'))
+  expect(r.submits.map(s => s.text)).toEqual(['list the PRs'])
+})
+
+test('an unsure sentence the person cleared is not sent later', { options: { engine: 'whisper', useWakeWord: false } }, async ($, on) => {
+  const r = rig(on)
+  await begin($)
+  await micOn($, r)
+  await say(r, UNSURE('delete prod send it'))
+  expect(r.draft).toBe('delete prod')
+  await typeInBox($, r, '')
+  await say(r, UTTER('send it'))
+  expect(r.submits).toEqual([])
+})
+
+test('a box cleared by something else is not filled back', { options: { engine: 'whisper', useWakeWord: false } }, async ($, on) => {
+  const r = rig(on)
+  await begin($)
+  await micOn($, r)
+  await say(r, UTTER('list the PRs'))
+  await boxCleared($, r)
+  await say(r, UTTER('run the tests'))
+  expect(r.draft).toBe('run the tests')
+})
+
+test('a bare stop word long after the send does nothing', { options: { engine: 'whisper' } }, async ($, on) => {
+  const r = rig(on)
+  await begin($)
+  await micOn($, r)
+  await say(r, UTTER('Claude, build it, send it'))
+  await $.turn.start({ text: 'build it', turnId: 't7' })
+  await r.clock.advance(31000)
+  await say(r, UTTER('wait'))
+  expect(r.aborts).toEqual([])
+  await say(r, UTTER('Claude, stop'))
+  expect(r.aborts).toEqual(['t7'])
+})
+
+test("the mod's own fill, as the engine reports it, keeps the box the mod's", { options: { engine: 'whisper', useWakeWord: false } }, async ($, on) => {
+  const r = rig(on, { staleReads: true })
+  await begin($)
+  await micOn($, r)
+  await say(r, UTTER('list the PRs'))
+  await ($.prompt as unknown as Raise).change({ text: 'list the PRs', cursor: 12, origin: { kind: 'plugin', name: 'desk-mic' } })
+  await say(r, UTTER('and the stale ones'))
+  expect(r.draft).toBe('list the PRs and the stale ones')
 })

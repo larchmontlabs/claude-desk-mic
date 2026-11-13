@@ -574,3 +574,24 @@ def test_a_low_confidence_mute_command_still_mutes():
     asyncio.run(listener.on_utterance_full("mic off", 0.3))
     assert state.listening is False
     assert {"type": "unsure", "text": "mic off"} not in _lines(stdout)
+
+
+def test_listen_log_holds_neither_speech_nor_the_key(tmp_path):
+    import logging
+
+    async def drive(listener):
+        await listener.on_utterance_full("private words one", 0.9)
+        await listener.on_utterance_full("private words two", 0.3)
+
+    deps = make_deps(Recorder(), log_file=True, after_ready=drive)
+    try:
+        listen.main(argv(tmp_path, "--engine", "deepgram"), deps)
+    finally:
+        root = logging.getLogger()
+        for handler in [h for h in root.handlers if isinstance(h, logging.FileHandler)]:
+            handler.close()
+            root.removeHandler(handler)
+    text = (tmp_path / "listen.log").read_text(encoding="utf-8")
+    assert "listen.py starting" in text
+    assert "private" not in text
+    assert deps.env["DEEPGRAM_API_KEY"] not in text

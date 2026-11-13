@@ -67,8 +67,13 @@ type State = {
   // text the mod put there for this sentence (a read of the box can lag a
   // fill, so it may show any of them). Gone once the sentence is finished.
   preview: { base: string; shown: string; paused: boolean } | undefined
-  // What the mod last put in the box, and its earlier fills a lagging read may still return.
-  box: { latest: string | undefined; older: Set<string>; lastRead: string }
+  // The box's text while it holds only what the mod put there; undefined once
+  // the person (or anything else) changes it. Set from the engine's events.
+  modText: string | undefined
+  // Counts changes to the box by anyone but the mod.
+  edits: number
+  // When the mic last sent a prompt, for the bare stop word right after.
+  lastSentMs: number
   // Dictated prompts waiting for the session to be idle.
   queued: number
   awakeTimer: { cancel: () => void } | undefined
@@ -248,45 +253,33 @@ ${detail}
   void stopSpeech($, st).killed
 }
 
-/** Reads the prompt box. A read can lag the mod's last fill and return a text
- *  the mod put there earlier; that counts as the latest fill until a read
- *  confirms it. Any other text means someone else changed the box. */
+/** The prompt box's text. While it holds only what the mod put there (the
+ *  engine's prompt.edit and prompt.change events say so), that text is known
+ *  without a read, so a read that lags a fill can never be taken for typing. */
 async function readBox($: Ctx, st: State): Promise<string> {
-  const text = (await $.prompt.read()).text
-  const box = st.box
-  if (box.latest !== undefined) {
-    if (text === box.latest) {
-      box.older.clear()
-    } else if (box.older.has(text)) {
-      return box.latest
-    } else {
-      box.latest = undefined
-      box.older.clear()
-    }
-  }
-  box.lastRead = text
-  return text
+  if (st.modText !== undefined) return st.modText
+  return (await $.prompt.read()).text
 }
 
-/** Replaces the box's text, remembering it so a lagging read is recognised. */
+/** Replaces the box's text; the box then holds only the mod's text. */
 async function fillBox($: Ctx, st: State, text: string): Promise<boolean> {
+  const edits = st.edits
   const { isFilled } = await $.prompt.fill({ text, mode: 'replace' })
-  if (isFilled) {
-    st.box.older.add(st.box.latest ?? st.box.lastRead)
-    st.box.latest = text
-  }
+  // A person's edit that landed while the fill ran wins.
+  if (isFilled && st.edits === edits) st.modText = text
   return isFilled
 }
 
-/** Forgets the mod's fills: the box was sent or changed by someone else. */
-function forgetBox(st: State): void {
-  st.box = { latest: undefined, older: new Set(), lastRead: '' }
+/** Someone other than the mod changed the box. */
+function boxChangedByOthers(st: State): void {
+  st.modText = undefined
+  st.edits++
+  if (st.preview) st.preview = { ...st.preview, paused: true }
 }
 
-/** Whether the box still shows this sentence's live words (or the draft under them). */
-function showsPreview(st: State, boxText: string): boolean {
-  const p = st.preview
-  return p !== undefined && !p.paused && (boxText === p.shown || boxText === p.base)
+/** Whether the box still shows this sentence's live words, untouched. */
+function showsPreview(st: State): boolean {
+  return st.preview !== undefined && !st.preview.paused && st.modText !== undefined
 }
 
 /** Shows the words heard so far in the prompt box, after the draft. An empty
@@ -297,47 +290,44 @@ async function onPartial($: Ctx, st: State, text: string): Promise<void> {
     if (text.trim() === '') st.preview = undefined
     return
   }
-  const now = await readBox($, st)
-  if (st.preview && !showsPreview(st, now)) {
-    st.preview = { ...st.preview, paused: true }
-    return
-  }
-  const base = st.preview ? st.preview.base : now
+  const base = st.preview ? st.preview.base : await readBox($, st)
   const shown = text.trim() === '' ? undefined : previewText(text, st.cfg.rules, base, st.awake, await $.clock.now())
   if (shown === undefined) {
-    if (st.preview && now !== base) await fillBox($, st, base)
+    if (showsPreview(st) && st.preview!.shown !== base) await fillBox($, st, base)
     st.preview = undefined
     return
   }
-  if (shown !== now && !(await fillBox($, st, shown))) {
+  if (st.preview?.paused) return
+  const current = st.preview ? st.preview.shown : base
+  if (shown !== current && !(await fillBox($, st, shown))) {
     st.preview = undefined
     return
   }
+  if (st.preview?.paused) return
   st.preview = { base, shown, paused: false }
 }
 
 /** Takes the live words out of the box, if they are still there. */
 async function dropPreview($: Ctx, st: State): Promise<void> {
+  const isShowing = showsPreview(st)
   const preview = st.preview
   st.preview = undefined
-  if (!preview || preview.paused) return
-  const now = await readBox($, st)
-  if (now === preview.shown && now !== preview.base) await fillBox($, st, preview.base)
+  if (isShowing && preview && preview.shown !== preview.base) await fillBox($, st, preview.base)
 }
 
 /** `unsure`: the speech engine was not sure it heard right, so the sentence
  *  may fill the box but is never sent, stopped or cleared on its own word. */
 async function onUtterance($: Ctx, st: State, text: string, unsure = false): Promise<void> {
-  const now = await readBox($, st)
-  const isShowing = showsPreview(st, now)
-  const draft = isShowing ? st.preview!.base : now
-  const hadPreview = isShowing && now !== draft
+  const isShowing = showsPreview(st)
+  const draft = isShowing ? st.preview!.base : await readBox($, st)
+  const hadPreview = isShowing && st.preview!.shown !== draft
   st.preview = undefined
+  const edits = st.edits
   const nowMs = await $.clock.now()
   let plan = planUtterance(text, st.cfg.rules, draft, st.awake, nowMs)
-  // While a reply runs or is read aloud, a bare stop word always works.
-  const isBusy = st.turnId !== undefined || st.speech !== undefined
-  if (isBusy && plan.action.kind === 'nothing' && stopWordSaid(text, st.cfg.rules)) {
+  // Right after a dictated send, while that reply runs, a bare stop word works.
+  const isStopReady = st.turnId !== undefined && nowMs - st.lastSentMs <= AWAKE_FOR_MS
+  if (isStopReady && plan.action.kind === 'nothing' && stopWordSaid(text, st.cfg.rules)) {
     plan = { action: { kind: 'stop' }, awake: plan.awake }
   }
   if (unsure) {
@@ -357,8 +347,8 @@ async function onUtterance($: Ctx, st: State, text: string, unsure = false): Pro
     }
   }
   const action = plan.action
-  // Whether the box still holds what was read (what the mic put there).
-  const unchanged = async () => (await readBox($, st)) === now
+  // Whether nobody else touched the box since it was read.
+  const unchanged = () => st.edits === edits
   if (action.kind === 'fill') {
     // A dialog can hold the prompt box; don't lose what was said.
     if (!(await fillBox($, st, action.text))) {
@@ -369,7 +359,7 @@ async function onUtterance($: Ctx, st: State, text: string, unsure = false): Pro
   } else if (action.kind === 'stop') {
     st.awake = plan.awake
     // Take the stop word's live words back out; the draft stays.
-    if (hadPreview && (await unchanged())) await fillBox($, st, draft)
+    if (hadPreview && unchanged()) await fillBox($, st, draft)
     const turnId = st.turnId
     let stopped = false
     if (turnId !== undefined) {
@@ -391,15 +381,17 @@ async function onUtterance($: Ctx, st: State, text: string, unsure = false): Pro
     await fillBox($, st, '')
   } else if (action.kind === 'submit') {
     st.awake = plan.awake
+    st.lastSentMs = nowMs
+    // The text now belongs to the submit, so free the box for the next prompt
+    // first: a submit that fails puts it back only into an empty box.
+    if ((draft.trim() !== '' || hadPreview) && unchanged()) await fillBox($, st, '')
     // A plugin prompt waits until the session is idle, which can take a whole
     // turn. Never wait on it here: the listener's events must keep flowing.
     void submitted($, st, action.text)
-    // The text now belongs to the submit, so free the box for the next prompt.
-    if (now.trim() !== '' && (await unchanged())) await fillBox($, st, '')
   } else {
     st.awake = plan.awake
     // Nothing to do with the sentence: take its live words back out.
-    if (hadPreview && (await unchanged())) await fillBox($, st, draft)
+    if (hadPreview && unchanged()) await fillBox($, st, draft)
   }
   if (st.awake.isAwake) {
     // Refresh once the awake stretch runs out, so the status asks for the wake word again.
@@ -635,7 +627,9 @@ export const register: Register = (on, options) => {
     muteKeyProblem: '',
     awake: ASLEEP,
     preview: undefined,
-    box: { latest: undefined, older: new Set(), lastRead: '' },
+    modText: undefined,
+    edits: 0,
+    lastSentMs: -Infinity,
     queued: 0,
     awakeTimer: undefined,
     turnId: undefined,
@@ -661,8 +655,23 @@ export const register: Register = (on, options) => {
     st.awake = { ...ASLEEP, lastHeardMs: st.awake.lastHeardMs }
     // A typed send empties the box; the mod's earlier fills mean nothing now.
     st.preview = undefined
-    forgetBox(st)
+    boxChangedByOthers(st)
     await stopSpeech($, st).killed
+    return next(e)
+  })
+
+  // Who changes the prompt box, as the engine reports it: a person's edit,
+  // or a change with its origin. Nothing here guesses from the box's text.
+  on('prompt.edit', async ($, e, next) => {
+    if (e.inputText !== '' || e.end > e.start) boxChangedByOthers(st)
+    return next(e)
+  })
+  on('prompt.change', async ($, e, next) => {
+    if (e.origin.kind === 'plugin' && e.origin.name === $.plugin.name) {
+      if (st.modText !== undefined) st.modText = e.text
+    } else {
+      boxChangedByOthers(st)
+    }
     return next(e)
   })
 

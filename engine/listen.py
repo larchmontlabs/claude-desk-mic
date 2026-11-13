@@ -440,7 +440,12 @@ def _log_to_file(path: Path) -> None:
         log.warning("Could not open %s: %s", path, exc)
         return
     handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
-    logging.getLogger().addHandler(handler)
+    # INFO and up only: what was said is logged at DEBUG, so it never lands here.
+    handler.setLevel(logging.INFO)
+    root = logging.getLogger()
+    if root.level == logging.NOTSET or root.level > logging.INFO:
+        root.setLevel(logging.INFO)
+    root.addHandler(handler)
 
 
 if __name__ == "__main__":
