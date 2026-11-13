@@ -10,6 +10,8 @@ import {
   pauseMsFor,
   planUtterance,
   previewText,
+  isEchoOf,
+  wakeWordHeard,
   rulesFrom,
   splitLines,
 } from './rules'
@@ -313,4 +315,33 @@ test('rulesFrom reads stop words, with the phone defaults when blank', async () 
 
 test('previewText leaves a stop word out of the box', async () => {
   expect(previewText('stop', WORD, 'list PRs', ASLEEP, 0)).toBeUndefined()
+})
+
+
+// ---- echo: the mic hearing its own read-aloud (voice-bridge voice_text.is_echo_of) ---
+
+test('isEchoOf matches any whole run of words in what was said', async () => {
+  const said = 'Yes, the tests pass. I pushed the fix to main.'
+  expect(isEchoOf('the tests pass', said)).toBe(true)
+  expect(isEchoOf('pushed the fix', said)).toBe(true)
+  expect(isEchoOf('Yes the tests', said)).toBe(true)
+  expect(isEchoOf('run the tests', said)).toBe(false)
+})
+
+test('isEchoOf never calls a short answer echo', async () => {
+  expect(isEchoOf('yes', 'Yes, the tests pass.')).toBe(false)
+  expect(isEchoOf('stop', 'Stop the server first.')).toBe(false)
+  expect(isEchoOf('the t', 'the tests pass')).toBe(false)
+})
+
+test('isEchoOf lines up on word boundaries', async () => {
+  expect(isEchoOf('run the', 'overrun theatre')).toBe(false)
+  expect(isEchoOf('anything', '')).toBe(false)
+})
+
+test('wakeWordHeard finds the wake word at the start only', async () => {
+  expect(wakeWordHeard('Claude, what time', WAKE_WORD)).toBe(true)
+  expect(wakeWordHeard('claude', WAKE_WORD)).toBe(true)
+  expect(wakeWordHeard('ask claude', WAKE_WORD)).toBe(false)
+  expect(wakeWordHeard('Claude', WORD)).toBe(false)
 })

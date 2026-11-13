@@ -91,6 +91,12 @@
       "description": "Read Claude's replies aloud while the mic is on",
       "default": false
     },
+    "interruptReading": {
+      "type": "boolean",
+      "title": "Interrupt reading aloud",
+      "description": "Keep listening while a reply is read aloud, so a stop word or a sentence starting with the wake word cuts it off. Turn off if loud speakers make it cut itself off",
+      "default": true
+    },
     "voice": {
       "type": "string",
       "title": "Voice",

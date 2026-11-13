@@ -251,3 +251,34 @@ def test_a_piece_made_while_cleanup_runs_is_still_removed(tmp_path):
     import time
     time.sleep(0.3)
     assert list((tmp_path / "speech").rglob("*.mp3")) == []
+
+
+# -- Each piece is reported just before it plays, so the mod knows its own voice ----
+
+def test_each_piece_is_reported_before_it_plays(tmp_path):
+    order = []
+    text = " ".join(f"Sentence number {i} is here." for i in range(8))
+    sp.speak(text, "v", "edge", tmp_path / "f", synth=_timed_synth(0.0),
+             player=lambda p: order.append(("play", Path(p).read_text(encoding="utf-8"))),
+             platform="win32", piece_chars=60, on_piece=lambda t: order.append(("piece", t)))
+    assert order and order[0][0] == "piece"
+    for i in range(0, len(order), 2):
+        assert order[i] == ("piece", order[i + 1][1])
+
+
+def test_the_os_voice_text_is_reported_too(tmp_path):
+    got = []
+    sp.speak("Read this.", "v", "sapi", tmp_path / "f", os_speak=lambda b, t: None,
+             platform="win32", on_piece=got.append)
+    assert got == ["Read this."]
+
+
+def test_main_writes_piece_lines(tmp_path):
+    out = io.StringIO()
+
+    def fake_speak(text, voice, backend, flag, on_piece=None):
+        on_piece("Hello there.")
+
+    sp.main(["--state-dir", str(tmp_path)], stdin=io.BytesIO(b"Hello there."), stdout=out, speak_fn=fake_speak)
+    lines = [json.loads(l) for l in out.getvalue().splitlines()]
+    assert lines[1] == {"type": "piece", "text": "Hello there."}

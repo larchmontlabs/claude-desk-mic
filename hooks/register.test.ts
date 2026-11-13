@@ -189,6 +189,8 @@ function rig(on: On, o: RigOptions = {}) {
       let finished = false
       try {
         yield { stream: 'stdout', text: `{"type":"pid","pid":${s.pid}}\n` }
+        // The whole reply as one piece, as speak.py reports before it plays.
+        yield { stream: 'stdout', text: `${JSON.stringify({ type: 'piece', text: s.input ?? '' })}\n` }
         // Playing until the tree kill lands; then the child dies.
         await s.killed.promise
         yield { stream: 'stderr', text: 'killed\n' }
@@ -293,10 +295,12 @@ test('status line text', async () => {
   expect(statusText(true, false, false, WORD, 'Right Ctrl')).toBe('mic muted (Right Ctrl)')
   expect(statusText(true, false, false, WORD, 'Right Option')).toBe('mic muted (Right Option)')
   expect(statusText(true, false, false, WORD, null)).toBe('mic muted')
-  expect(statusText(true, true, true, PAUSE, 'Right Ctrl')).toBe('mic paused while speaking')
+  expect(statusText(true, true, true, PAUSE, 'Right Ctrl')).toBe('mic paused while reading aloud')
+  expect(statusText(true, true, true, WORD, 'Right Ctrl', 'none', true)).toBe('reading aloud - say "stop" to interrupt')
   expect(statusText(true, true, false, WORD, 'Right Ctrl')).toBe('mic on - say "send it"')
   expect(statusText(true, true, false, PAUSE, 'Right Ctrl')).toBe('mic on - sends when you pause')
-  expect(statusText(true, true, false, WAKE, 'Right Ctrl', true)).toBe('mic on - say "send it" - say "claude" first')
+  expect(statusText(true, true, false, WAKE, 'Right Ctrl', 'asleep')).toBe('mic on - say "claude" to start')
+  expect(statusText(true, true, false, WAKE, 'Right Ctrl', 'awake')).toBe('● listening - say "send it" to send')
 })
 
 test('speak.py pid line and the tree kill per OS', async () => {
@@ -473,9 +477,20 @@ test('status asks for the wake word until it is heard', { options: { engine: 'wh
   const r = rig(on)
   await begin($)
   await micOn($, r)
-  expect(r.status).toBe('mic on - say "send it" - say "claude" first')
+  expect(r.status).toBe('mic on - say "claude" to start')
   await say(r, UTTER('Claude, list the PRs'))
-  expect(r.status).toBe('mic on - say "send it"')
+  expect(r.status).toBe('● listening - say "send it" to send')
+})
+
+test('the status shows "listening" the moment the wake word is in the live words', { options: { engine: 'whisper' } }, async ($, on) => {
+  const r = rig(on)
+  await begin($)
+  await micOn($, r)
+  await say(r, PARTIAL('Claude'))
+  expect(r.status).toBe('● listening - say "send it" to send')
+  // Awake from the live words: the rest of the sentence fills the box.
+  await say(r, UTTER('Claude, list the PRs'))
+  expect(r.draft).toBe('list the PRs')
 })
 
 for (const [stage, message] of [
@@ -561,7 +576,7 @@ test('awake runs out after 30 s of quiet', { options: { engine: 'whisper' } }, a
   await r.clock.advance(31000)
   await say(r, UTTER('and the old ones'))
   expect(r.fills.length).toBe(2)
-  expect(r.status).toBe('mic on - say "send it" - say "claude" first')
+  expect(r.status).toBe('mic on - say "claude" to start')
 })
 
 test('muting resets the wake word', { options: { engine: 'whisper' } }, async ($, on) => {
@@ -1188,4 +1203,87 @@ test('pause mode passes no send word to the engine', { options: { deepgramApiKey
   await begin($)
   await micOn($, r)
   expect(r.spawns[0]!.argv).not.toContain('--send-word')
+})
+
+
+// ---- interrupting a reply being read aloud --------------------------------
+
+const READING = 'The tests pass and the fix is on main now.'
+
+async function reading($: Dollar, r: Rig) {
+  await $.turn.complete(turn(READING))
+  await until(() => r.speakers.length === 1, 'the speak spawn')
+  await drain()
+}
+
+const killedReading = (r: Rig) => r.runs.some(a => a.join(' ') === treeKillArgv('win32', 77).join(' '))
+
+test('the mic hears while reading aloud unless that is turned off', { options: SPEAK }, async ($, on) => {
+  const r = rig(on)
+  await begin($)
+  await micOn($, r)
+  expect(r.spawns[0]!.argv).toContain('--hear-while-speaking')
+})
+
+test('with interrupting off the mic does not hear while reading', { options: { ...SPEAK, interruptReading: false } }, async ($, on) => {
+  const r = rig(on)
+  await begin($)
+  await micOn($, r)
+  expect(r.spawns[0]!.argv).not.toContain('--hear-while-speaking')
+})
+
+test('its own voice coming back is not taken for the person', { options: { ...SPEAK, useWakeWord: false } }, async ($, on) => {
+  const r = rig(on)
+  await begin($)
+  await micOn($, r)
+  await reading($, r)
+  await say(r, PARTIAL('the tests pass and'))
+  await say(r, UTTER('the tests pass and the fix'))
+  expect(r.fills).toEqual([])
+  expect(r.submits).toEqual([])
+  expect(killedReading(r)).toBe(false)
+})
+
+test('a stop word on its own stops the reading at once', { options: SPEAK }, async ($, on) => {
+  const r = rig(on)
+  await begin($)
+  await micOn($, r)
+  await reading($, r)
+  await say(r, PARTIAL('stop'))
+  expect(killedReading(r)).toBe(true)
+})
+
+test('a sentence starting with the wake word cuts the reading off and is handled', { options: SPEAK }, async ($, on) => {
+  const r = rig(on)
+  await begin($)
+  await micOn($, r)
+  await reading($, r)
+  await say(r, PARTIAL('Claude, list the'))
+  expect(killedReading(r)).toBe(true)
+  await say(r, UTTER('Claude, list the PRs'))
+  expect(r.draft).toBe('list the PRs')
+})
+
+test('room talk without the wake word does not cut the reading off', { options: SPEAK }, async ($, on) => {
+  const r = rig(on)
+  await begin($)
+  await micOn($, r)
+  await reading($, r)
+  await say(r, PARTIAL('so anyway he said that'))
+  await say(r, UTTER('so anyway he said that'))
+  expect(killedReading(r)).toBe(false)
+})
+
+test('its own voice is still known for a while after reading ends', { options: { ...SPEAK, useWakeWord: false } }, async ($, on) => {
+  const r = rig(on)
+  await begin($)
+  await micOn($, r)
+  await reading($, r)
+  r.speakers[0]!.killed.resolve()
+  await drain()
+  await say(r, UTTER('the fix is on main'))
+  expect(r.fills).toEqual([])
+  await r.clock.advance(11000)
+  await say(r, UTTER('the fix is on main'))
+  expect(r.draft).toBe('the fix is on main')
 })

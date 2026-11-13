@@ -230,3 +230,37 @@ export function previewText(text: string, rules: Rules, draft: string, awake: Aw
   if (CLEAR_WORDS.test(sentence) || isStopWord(sentence, rules.stopWords)) return undefined
   return join(draft, cutSendWord(sentence, rules.sendWords).text)
 }
+
+/** Whether the sentence starts with a wake word (the wake word must be on). */
+export function wakeWordHeard(text: string, rules: Rules): boolean {
+  return rules.useWakeWord && afterWakeWord(text, rules.wakeWords) !== undefined
+}
+
+// Echo: the mic hearing desk-mic's own read-aloud. Ported from voice-bridge
+// voice_text.py (normalize_for_echo, is_echo_of, MIN_ECHO_CHARS, MIN_ECHO_WORDS)
+// and bridge.py (ECHO_MEMORY_SECONDS, ECHO_GUARD_MS defaults).
+export const MIN_ECHO_CHARS = 6
+export const MIN_ECHO_WORDS = 2
+// What was read aloud stops counting as possible echo this long after.
+export const ECHO_MEMORY_MS = 10000
+// The piece before the current one counts only this long after reading ends.
+export const ECHO_GUARD_MS = 1200
+
+function normalizeForEcho(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+    .split(/\s+/)
+    .filter(Boolean)
+    .join(' ')
+}
+
+/** True when `text` is a whole run of words inside `spoken` (start, end or
+ *  middle). Under MIN_ECHO_CHARS characters or MIN_ECHO_WORDS words it is never
+ *  echo: "yes", "no", "stop" are answers even when the reply said them. */
+export function isEchoOf(text: string, spoken: string): boolean {
+  const heard = normalizeForEcho(text)
+  const said = normalizeForEcho(spoken)
+  if (said === '' || heard.length < MIN_ECHO_CHARS || heard.split(' ').length < MIN_ECHO_WORDS) return false
+  return ` ${said} `.includes(` ${heard} `)
+}

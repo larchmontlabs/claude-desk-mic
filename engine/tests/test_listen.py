@@ -88,6 +88,29 @@ def test_muted_utterance_is_dropped():
 # -- The audio callback gate -------------------------------------------------------
 
 
+def test_audio_sent_while_speaking_when_asked_so_reading_can_be_interrupted():
+    sent = []
+    listener, state, stdout, _ = _listener(speaking=True, sent=sent)
+    listener.hear_while_speaking = True
+    listener.audio_callback(audio(), 160, None, None)
+    assert len(sent) == 1
+    assert state.speaking is True  # still reported, so the mod knows reading is on
+
+
+def test_hear_while_speaking_flag_reaches_the_listener(tmp_path):
+    rec = Recorder()
+    seen = []
+
+    async def look(listener):
+        seen.append(listener.hear_while_speaking)
+
+    deps = make_deps(rec, after_ready=look)
+    listen.main(argv(tmp_path, "--engine", "deepgram", "--hear-while-speaking"), deps)
+    deps = make_deps(rec, after_ready=look)
+    listen.main(argv(tmp_path, "--engine", "deepgram"), deps)
+    assert seen == [True, False]
+
+
 def test_audio_not_sent_while_speaking():
     sent = []
     listener, _, _, flag = _listener(speaking=True, sent=sent)

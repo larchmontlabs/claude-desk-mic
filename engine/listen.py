@@ -78,6 +78,9 @@ class Listener:
         self.state = state
         self._flag = flag
         self._is_speaking = is_speaking
+        # Keep sending audio while a reply is read aloud, so the person can
+        # interrupt it; the mod tells its own voice apart from theirs.
+        self.hear_while_speaking = False
         # Set once the speech engine has started; until then audio is dropped.
         self.send: Callable[[bytes], Any] | None = None
 
@@ -128,7 +131,7 @@ class Listener:
             log.warning("Audio status: %s", status)
         speaking = self._is_speaking(self._flag)
         self.state.set_speaking(speaking)
-        if speaking or not self.state.listening or self.send is None:
+        if (speaking and not self.hear_while_speaking) or not self.state.listening or self.send is None:
             return
         pcm = (np.clip(indata[:, 0], -1.0, 1.0) * 32767).astype(np.int16).tobytes()
         self.send(pcm)
@@ -199,6 +202,8 @@ def parse_args(argv=None) -> argparse.Namespace:
     parser.add_argument("--pause-ms", type=int, default=3000, help="quiet time that ends a sentence")
     parser.add_argument("--mute-key", type=_mute_key, default="auto")
     parser.add_argument("--vad-level", type=_vad_level, default=2, help="Whisper voice detection, 0 to 3")
+    parser.add_argument("--hear-while-speaking", action="store_true",
+                        help="keep listening while a reply is read aloud, so it can be interrupted")
     parser.add_argument("--send-word", action="append", default=[],
                         help="a send word: a sentence ending with it is sent at once (deepgram); repeatable")
     parser.add_argument("--keyterm", action="append", default=[], help="a word to listen hard for; repeatable")
@@ -272,6 +277,7 @@ async def run(args: argparse.Namespace, deps: Deps) -> int:
 
     state = MicState(out)
     listener = Listener(out, state, flag, is_speaking=deps.is_speaking)
+    listener.hear_while_speaking = args.hear_while_speaking
     loop = asyncio.get_running_loop()
     closed: asyncio.Future = loop.create_future()
 

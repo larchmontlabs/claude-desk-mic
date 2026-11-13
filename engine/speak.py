@@ -206,7 +206,7 @@ def _remove(path):
 
 
 def speak(text, voice, backend, flag, *, synth=None, player=None, os_speak=None,
-          platform=None, wait_s=EDGE_WAIT_S, piece_chars=PIECE_CHARS):
+          platform=None, wait_s=EDGE_WAIT_S, piece_chars=PIECE_CHARS, on_piece=None):
     text = speakable(text)
     if not text:
         return
@@ -214,6 +214,8 @@ def speak(text, voice, backend, flag, *, synth=None, player=None, os_speak=None,
     synth = synth or _edge_synth
     player = player or _play
     os_speak = os_speak or _os_speak
+    # What is about to be heard, so the mod can tell its own voice from the person's.
+    tell = on_piece or (lambda piece: None)
     flag = Path(flag)
     flag.parent.mkdir(parents=True, exist_ok=True)
     flag.write_text(str(os.getpid()))
@@ -232,8 +234,11 @@ def speak(text, voice, backend, flag, *, synth=None, player=None, os_speak=None,
                     # Each piece gets the wait: no audio within it means the OS voice.
                     if not ready[i].wait(wait_s) or paths[i] is None:
                         stop.set()
-                        os_speak(os_backend(platform), " ".join(pieces[i:]))
+                        rest = " ".join(pieces[i:])
+                        tell(rest)
+                        os_speak(os_backend(platform), rest)
                         return
+                    tell(pieces[i])
                     player(paths[i])
             except PlayerStopped:
                 return
@@ -247,6 +252,7 @@ def speak(text, voice, backend, flag, *, synth=None, player=None, os_speak=None,
                 except OSError:
                     pass  # a piece still being made; the next reading sweeps it
         else:
+            tell(text)
             os_speak(backend, text)
     finally:
         try:
@@ -278,7 +284,12 @@ def main(argv=None, stdin=None, stdout=None, speak_fn=None):
     if not text.strip():
         return 0
     backend = pick_backend(sys.platform, shutil.which("ffplay"), shutil.which("afplay"))
-    (speak_fn or speak)(text, args.voice, backend, state_paths(Path(args.state_dir))["flag"])
+
+    def on_piece(piece):
+        stdout.write(json.dumps({"type": "piece", "text": piece}, ensure_ascii=True) + "\n")
+        stdout.flush()
+
+    (speak_fn or speak)(text, args.voice, backend, state_paths(Path(args.state_dir))["flag"], on_piece=on_piece)
     return 0
 
 

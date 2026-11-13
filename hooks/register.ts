@@ -13,6 +13,10 @@ import {
   planUtterance,
   previewText,
   stopWordSaid,
+  wakeWordHeard,
+  isEchoOf,
+  ECHO_MEMORY_MS,
+  ECHO_GUARD_MS,
   rulesFrom,
   splitLines,
 } from './rules'
@@ -48,6 +52,8 @@ type Config = {
   vadLevel: number
   muteKey: string
   speakBack: boolean
+  // Keep listening while a reply is read aloud, so it can be interrupted.
+  interruptReading: boolean
   voice: string
 }
 
@@ -84,6 +90,9 @@ type State = {
   stateDir: string
   platform: 'win32' | 'darwin'
   speech: Speech | undefined
+  // What the read-aloud last said (`now`, `prev`), when that piece started and
+  // when reading ended, to tell desk-mic's own voice from the person's.
+  echo: { now: string; prev: string; at: number; endedAt: number }
 }
 
 const KILL_TIMEOUT_MS = 10000
@@ -95,13 +104,17 @@ export function statusText(
   speaking: boolean,
   rules: Rules,
   muteKey: string | null,
-  needsWakeWord = false,
+  wake: 'none' | 'asleep' | 'awake' = 'none',
+  canInterrupt = false,
 ): string | undefined {
   if (!on) return undefined
   if (!listening) return muteKey ? `mic muted (${muteKey})` : 'mic muted'
-  if (speaking) return 'mic paused while speaking'
-  const base = rules.mode === 'pause' ? 'mic on - sends when you pause' : `mic on - say "${rules.sendWords[0]}"`
-  return needsWakeWord ? `${base} - say "${rules.wakeWords[0]}" first` : base
+  if (speaking) return canInterrupt ? `reading aloud - say "${rules.stopWords[0] ?? 'stop'}" to interrupt` : 'mic paused while reading aloud'
+  if (wake === 'asleep') return `mic on - say "${rules.wakeWords[0]}" to start`
+  if (wake === 'awake') {
+    return rules.mode === 'pause' ? '● listening - sends when you pause' : `● listening - say "${rules.sendWords[0]}" to send`
+  }
+  return rules.mode === 'pause' ? 'mic on - sends when you pause' : `mic on - say "${rules.sendWords[0]}"`
 }
 
 function describe(rules: Rules, pauseSeconds: number): string {
@@ -148,6 +161,7 @@ function configFrom(options: Readonly<Record<string, unknown>>): Config {
     vadLevel: num(options.vadLevel, 2),
     muteKey: str(options.muteKey, 'auto'),
     speakBack: options.speakBack === true,
+    interruptReading: options.interruptReading !== false,
     voice: str(options.voice, 'en-US-AriaNeural'),
   }
 }
@@ -156,8 +170,8 @@ async function refresh($: Ctx, st: State): Promise<void> {
   if (st.phase !== 'on') return
   const now = await $.clock.now()
   const isAwake = st.awake.isAwake && now - st.awake.lastHeardMs <= AWAKE_FOR_MS
-  const needsWake = st.cfg.rules.useWakeWord && !isAwake
-  $.ui.status(statusText(true, st.listening, st.speaking, st.cfg.rules, st.muteKey, needsWake))
+  const wake = !st.cfg.rules.useWakeWord ? 'none' : isAwake ? 'awake' : 'asleep'
+  $.ui.status(statusText(true, st.listening, st.speaking, st.cfg.rules, st.muteKey, wake, st.cfg.interruptReading))
 }
 
 /** Stops speak-back: kills speak.py's whole tree by the pid it printed, then
@@ -196,6 +210,42 @@ async function clearSpeakingFlag($: Ctx, stateDir: string, pid: number): Promise
   }
 }
 
+/** speak.py's `{"type":"piece","text":...}` line: what is about to be heard. */
+export function parsePieceLine(line: string): string | undefined {
+  try {
+    const value: unknown = JSON.parse(line)
+    if (!value || typeof value !== 'object') return undefined
+    const { type, text } = value as { type?: unknown; text?: unknown }
+    return type === 'piece' && typeof text === 'string' ? text : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/** A piece of the reply is about to play: remember it as possible echo. */
+async function heardOwnVoice($: Ctx, st: State, piece: string): Promise<void> {
+  st.echo = { now: piece, prev: st.echo.now, at: await $.clock.now(), endedAt: Number.POSITIVE_INFINITY }
+}
+
+/** Whether `text` is desk-mic's own read-aloud coming back through the mic:
+ *  the piece playing (or just played), and the one before it while reading
+ *  or just after (voice-bridge's _looks_like_echo, with its time limits). */
+function isOwnVoice(st: State, text: string, nowMs: number): boolean {
+  const e = st.echo
+  const lastSpoken = Math.min(nowMs, e.endedAt)
+  if (e.now === '' || nowMs > Math.max(e.at, lastSpoken) + ECHO_MEMORY_MS) return false
+  if (isEchoOf(text, e.now)) return true
+  const isGuarded = st.speech !== undefined || nowMs - e.endedAt <= ECHO_GUARD_MS
+  return isGuarded && isEchoOf(text, e.prev)
+}
+
+/** While a reply is read aloud, these cut it off: a stop word on its own, or
+ *  a sentence starting with the wake word (any sentence when that is off). */
+function cutsReadingOff(st: State, text: string): boolean {
+  const rules = st.cfg.rules
+  return stopWordSaid(text, rules) || wakeWordHeard(text, rules) || (!rules.useWakeWord && text.trim().split(/\s+/).length >= 2)
+}
+
 /** Reads a reply aloud; a reply still playing is stopped first. Runs in the
  *  background: the turn.complete hook never waits on it. */
 async function speak($: Ctx, st: State, answer: string): Promise<void> {
@@ -215,15 +265,24 @@ async function speak($: Ctx, st: State, answer: string): Promise<void> {
       const step = await stream.next()
       if (step.done) break
       const chunk = step.value
-      if (chunk.stream !== 'stdout' || s.pid !== undefined) continue
+      if (chunk.stream !== 'stdout') continue
       const split = splitLines(out, chunk.text)
       out = split.rest
-      for (const line of split.lines) s.pid ??= parsePidLine(line)
+      for (const line of split.lines) {
+        s.pid ??= parsePidLine(line)
+        const piece = parsePieceLine(line)
+        if (piece !== undefined) await heardOwnVoice($, st, piece)
+      }
     }
   } catch (err) {
     $.ui.log(`desk-mic: speak-back failed: ${String(err)}`, { to: 'debug' })
   }
   if (st.speech === s) st.speech = undefined
+  try {
+    st.echo.endedAt = await $.clock.now()
+  } catch {
+    // the session is closing; nothing more will be heard
+  }
   finish()
 }
 
@@ -282,10 +341,37 @@ function showsPreview(st: State): boolean {
   return st.preview !== undefined && !st.preview.paused && st.modText !== undefined
 }
 
+/** The wake word heard in the live words wakes the mic at once, so the status
+ *  shows it is listening while the person is still talking. */
+async function noteWakeWord($: Ctx, st: State, text: string): Promise<void> {
+  if (!wakeWordHeard(text, st.cfg.rules)) return
+  const nowMs = await $.clock.now()
+  const wasAwake = st.awake.isAwake && nowMs - st.awake.lastHeardMs <= AWAKE_FOR_MS
+  st.awake = { isAwake: true, lastHeardMs: nowMs }
+  keepAwakeTimer($, st)
+  if (!wasAwake) await refresh($, st)
+}
+
+/** Refresh once the awake stretch runs out, so the status asks for the wake word again. */
+function keepAwakeTimer($: Ctx, st: State): void {
+  st.awakeTimer?.cancel()
+  st.awakeTimer = $.clock.after(AWAKE_FOR_MS + 1, () => void refresh($, st))
+}
+
 /** Shows the words heard so far in the prompt box, after the draft. An empty
  *  text (the sentence was thrown away) puts the box back as it was. Typing
  *  while live words show pauses them for the rest of the sentence. */
 async function onPartial($: Ctx, st: State, text: string): Promise<void> {
+  if (text.trim() !== '') {
+    const nowMs = await $.clock.now()
+    if (isOwnVoice(st, text, nowMs)) return
+    if (st.speech) {
+      // Talking over the reading: cut it off only for a stop word or the wake word.
+      if (!cutsReadingOff(st, text)) return
+      await stopSpeech($, st).killed
+    }
+  }
+  await noteWakeWord($, st, text)
   if (st.preview?.paused) {
     if (text.trim() === '') st.preview = undefined
     return
@@ -318,6 +404,19 @@ async function dropPreview($: Ctx, st: State): Promise<void> {
 /** `unsure`: the speech engine was not sure it heard right, so the sentence
  *  may fill the box but is never sent, stopped or cleared on its own word. */
 async function onUtterance($: Ctx, st: State, text: string, unsure = false): Promise<void> {
+  if (isOwnVoice(st, text, await $.clock.now())) {
+    await dropPreview($, st)
+    return
+  }
+  if (st.speech) {
+    if (!cutsReadingOff(st, text)) return
+    await stopSpeech($, st).killed
+    if (stopWordSaid(text, st.cfg.rules)) {
+      await dropPreview($, st)
+      $.ui.toast('Stopped reading.')
+      return
+    }
+  }
   const isShowing = showsPreview(st)
   const draft = isShowing ? st.preview!.base : await readBox($, st)
   const hadPreview = isShowing && st.preview!.shown !== draft
@@ -402,11 +501,7 @@ async function onUtterance($: Ctx, st: State, text: string, unsure = false): Pro
     // Nothing to do with the sentence: take its live words back out.
     if (hadPreview && unchanged()) await fillBox($, st, draft)
   }
-  if (st.awake.isAwake) {
-    // Refresh once the awake stretch runs out, so the status asks for the wake word again.
-    st.awakeTimer?.cancel()
-    st.awakeTimer = $.clock.after(AWAKE_FOR_MS + 1, () => void refresh($, st))
-  }
+  if (st.awake.isAwake) keepAwakeTimer($, st)
 }
 
 /** Sends a dictated prompt and deals with the result whenever it comes. */
@@ -517,6 +612,7 @@ async function start($: Ctx, st: State, myRun: number, pauseMs: number): Promise
     '--parent-pid',
     String(py.sessionPid),
     ...(cfg.engine === 'whisper' ? ['--model', cfg.whisperModel] : []),
+    ...(cfg.interruptReading ? ['--hear-while-speaking'] : []),
     ...(cfg.rules.mode === 'word' ? cfg.rules.sendWords.flatMap(word => ['--send-word', word]) : []),
     ...keyterms(cfg.rules).flatMap(term => ['--keyterm', term]),
   ]
@@ -647,6 +743,7 @@ export const register: Register = (on, options) => {
     queued: 0,
     awakeTimer: undefined,
     turnId: undefined,
+    echo: { now: '', prev: '', at: Number.NEGATIVE_INFINITY, endedAt: Number.NEGATIVE_INFINITY },
     python: '',
     stateDir: '',
     platform: 'win32',
