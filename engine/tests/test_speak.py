@@ -112,3 +112,52 @@ def test_first_line_is_pid_event(tmp_path):
     assert rc == 0
     assert json.loads(out.getvalue().splitlines()[0]) == {"type": "pid", "pid": os.getpid()}
     assert spoken
+
+
+# -- Long replies: played piece by piece, so audio starts within the wait -----------
+
+def test_split_pieces_keeps_every_word_and_breaks_at_sentences():
+    text = " ".join(f"Sentence number {i} is here." for i in range(40))
+    pieces = sp.split_pieces(text, max_chars=120)
+    assert len(pieces) > 1
+    assert all(len(p) <= 120 for p in pieces)
+    assert " ".join(pieces).split() == text.split()
+    assert all(p.endswith(".") for p in pieces)
+    assert sp.split_pieces("Short one.", max_chars=120) == ["Short one."]
+    long_word_run = "word " * 100
+    assert all(len(p) <= 120 for p in sp.split_pieces(long_word_run, max_chars=120))
+
+
+def _timed_synth(per_piece_s, fail_on=None):
+    import time
+
+    def synth(text, voice, out):
+        time.sleep(per_piece_s)
+        if fail_on is not None and fail_on in text:
+            raise OSError("offline")
+        Path(out).write_text(text, encoding="utf-8")
+
+    return synth
+
+
+def test_long_reply_starts_within_the_wait_even_if_all_of_it_would_not(tmp_path):
+    text = " ".join(f"Sentence number {i} is here." for i in range(60))
+    played, fallback = [], []
+    sp.speak(text, "v", "edge", tmp_path / "f", synth=_timed_synth(0.05),
+             player=lambda p: played.append(Path(p).read_text(encoding="utf-8")),
+             os_speak=lambda b, t: fallback.append(t), platform="win32", wait_s=0.3, piece_chars=120)
+    assert fallback == []
+    assert len(played) > 3
+    assert " ".join(played).split() == text.split()
+
+
+def test_a_later_piece_failing_reads_the_rest_with_the_os_voice(tmp_path):
+    text = " ".join(f"Sentence number {i} is here." for i in range(20))
+    played, fallback = [], []
+    sp.speak(text, "v", "edge", tmp_path / "f", synth=_timed_synth(0.0, fail_on="number 10 "),
+             player=lambda p: played.append(Path(p).read_text(encoding="utf-8")),
+             os_speak=lambda b, t: fallback.append((b, t)), platform="win32", wait_s=1.0, piece_chars=60)
+    assert played and fallback
+    assert fallback[0][0] == "sapi"
+    heard = " ".join(played + [fallback[0][1]])
+    assert heard.split() == text.split()

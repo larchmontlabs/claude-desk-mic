@@ -6,6 +6,9 @@ First stdout line is {"type":"pid","pid":N} so the mod can kill the process tree
 Natural voice = edge-tts (rate +15%) played by ffplay, or afplay on macOS.
 If edge-tts fails or gives no audio in 5 s, the OS voice is used: SAPI via
 PowerShell on Windows, `say` on macOS (both use the OS default voice).
+A long reply is made and played in pieces, so the first piece plays within the
+wait while the rest is still being made (a 1,500-character reply takes edge-tts
+about 13 s to make in one go). If a later piece fails, the OS voice reads the rest.
 """
 import argparse
 import asyncio
@@ -24,6 +27,8 @@ from text import speakable
 
 RATE = "+15%"
 EDGE_WAIT_S = 5.0
+# Characters per piece: about 2 s of edge-tts work, so audio starts quickly.
+PIECE_CHARS = 250
 
 _child = None
 
@@ -94,26 +99,77 @@ def _play(path):
     _run(argv + [path])
 
 
-def _synth_with_wait(synth, text, voice, out_path, wait_s):
-    """Run synth in a thread. True only if it finished with audio within wait_s."""
-    result = {"ok": False}
-    done = threading.Event()
+def split_pieces(text, max_chars=PIECE_CHARS):
+    """Text in pieces of at most max_chars, broken after sentences where it can
+    be and between words otherwise. Every word is kept, in order."""
+    import re
+
+    pieces, current = [], ""
+
+    def add(part):
+        nonlocal current
+        if not current:
+            current = part
+        elif len(current) + 1 + len(part) <= max_chars:
+            current = f"{current} {part}"
+        else:
+            pieces.append(current)
+            current = part
+
+    for sentence in re.split(r"(?<=[.!?])\s+", text.strip()):
+        if not sentence:
+            continue
+        if len(sentence) <= max_chars:
+            add(sentence)
+            continue
+        for word in sentence.split():
+            while len(word) > max_chars:
+                add(word[:max_chars])
+                word = word[max_chars:]
+            if word:
+                add(word)
+    if current:
+        pieces.append(current)
+    return pieces
+
+
+def _synth_pieces(synth, pieces, voice):
+    """Make each piece's audio in order on a thread. Returns (paths, ready):
+    ready[i] is set once piece i is made; paths[i] is its file, or None if it
+    failed (and nothing after it is made)."""
+    paths = [None] * len(pieces)
+    ready = [threading.Event() for _ in pieces]
 
     def work():
-        try:
-            synth(text, voice, out_path)
-            result["ok"] = os.path.exists(out_path) and os.path.getsize(out_path) > 0
-        except Exception:
-            pass
-        finally:
-            done.set()
+        for i, piece in enumerate(pieces):
+            fd, out_path = tempfile.mkstemp(suffix=".mp3")
+            os.close(fd)
+            try:
+                synth(piece, voice, out_path)
+                if os.path.getsize(out_path) > 0:
+                    paths[i] = out_path
+            except Exception:
+                pass
+            if paths[i] is None:
+                _remove(out_path)
+                for event in ready[i:]:
+                    event.set()
+                return
+            ready[i].set()
 
     threading.Thread(target=work, daemon=True).start()
-    return done.wait(wait_s) and result["ok"]
+    return paths, ready
+
+
+def _remove(path):
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
 
 
 def speak(text, voice, backend, flag, *, synth=None, player=None, os_speak=None,
-          platform=None, wait_s=EDGE_WAIT_S):
+          platform=None, wait_s=EDGE_WAIT_S, piece_chars=PIECE_CHARS):
     text = speakable(text)
     if not text:
         return
@@ -126,18 +182,19 @@ def speak(text, voice, backend, flag, *, synth=None, player=None, os_speak=None,
     flag.write_text(str(os.getpid()))
     try:
         if backend == "edge":
-            fd, out_path = tempfile.mkstemp(suffix=".mp3")
-            os.close(fd)
+            pieces = split_pieces(text, piece_chars)
+            paths, ready = _synth_pieces(synth, pieces, voice)
             try:
-                if _synth_with_wait(synth, text, voice, out_path, wait_s):
-                    player(out_path)
-                    return
+                for i in range(len(pieces)):
+                    # Each piece gets the wait: no audio within it means the OS voice.
+                    if not ready[i].wait(wait_s) or paths[i] is None:
+                        os_speak(os_backend(platform), " ".join(pieces[i:]))
+                        return
+                    player(paths[i])
             finally:
-                try:
-                    os.unlink(out_path)
-                except OSError:
-                    pass
-            os_speak(os_backend(platform), text)
+                for i, path in enumerate(paths):
+                    if path is not None and ready[i].is_set():
+                        _remove(path)
         else:
             os_speak(backend, text)
     finally:
