@@ -86,6 +86,8 @@ claude plugin configure desk-mic@claude-desk-mic
 
 (add `--values-stdin` to save values from a JSON object on stdin).
 
+If the setting is blank, desk-mic uses the `DEEPGRAM_API_KEY` environment variable instead. Setting that once on your computer covers every Claude Code account or config folder you use, since each one keeps its own plugin settings. The setting wins when both are set.
+
 ## Developing
 
 - Tests: `claude plugin test .`

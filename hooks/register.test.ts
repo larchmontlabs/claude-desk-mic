@@ -78,6 +78,7 @@ type RigOptions = {
   fillThrows?: boolean
   // prompt.read lags one fill behind, as the real prompt box can.
   staleReads?: boolean
+  env?: Record<string, string>
   submit?: (text: string) => Promise<{ text: string }>
 }
 
@@ -88,7 +89,7 @@ const ok = (stdout = '') => ({ value: { exitCode: 0, stdout, stderr: '', isStdou
 function rig(on: On, o: RigOptions = {}) {
   const platform = o.platform ?? 'win32'
   const clock = mock.clock(on)
-  mock.env(on, {})
+  mock.env(on, o.env ?? {})
   const r = {
     clock,
     platform,
@@ -293,6 +294,22 @@ test('refuses to start without a key', { options: { engine: 'deepgram' } }, asyn
   await drain()
   expect(r.spawns.length).toBe(0)
   expect(r.runs.length).toBe(0)
+})
+
+test('a blank key setting falls back to DEEPGRAM_API_KEY', { options: { engine: 'deepgram' } }, async ($, on) => {
+  const r = rig(on, { env: { DEEPGRAM_API_KEY: ' env-key ' } })
+  await begin($)
+  expect(await mic($)).toMatch(/Mic starting/)
+  await until(() => r.listeners.length === 1, 'the listener spawn')
+  expect(r.spawns[0]!.env).toEqual({ DEEPGRAM_API_KEY: 'env-key' })
+})
+
+test('the key setting wins over DEEPGRAM_API_KEY', { options: { engine: 'deepgram', deepgramApiKey: 'setting-key' } }, async ($, on) => {
+  const r = rig(on, { env: { DEEPGRAM_API_KEY: 'env-key' } })
+  await begin($)
+  await mic($)
+  await until(() => r.listeners.length === 1, 'the listener spawn')
+  expect(r.spawns[0]!.env).toEqual({ DEEPGRAM_API_KEY: 'setting-key' })
 })
 
 // A pause under one second never reaches the mod: plugin.json's `min: 1`

@@ -538,7 +538,13 @@ async function micCommand($: Ctx, st: State, args: string): Promise<string> {
   if (st.phase === 'on') return 'Mic is already on.'
   if (st.phase === 'starting') return 'Mic is already starting.'
   if (cfg.engine === 'deepgram' && cfg.apiKey === '') {
-    return `Set your Deepgram key with ${KEY_HINT}, or switch engine to whisper.`
+    // A blank setting falls back to DEEPGRAM_API_KEY, so one key set on the
+    // computer serves every Claude account.
+    const fromEnv = ((await $.env.get('DEEPGRAM_API_KEY')) ?? '').trim()
+    if (fromEnv === '') {
+      return `Set your Deepgram key with ${KEY_HINT} or the DEEPGRAM_API_KEY environment variable, or switch engine to whisper.`
+    }
+    st.cfg = { ...cfg, apiKey: fromEnv }
   }
   // Checked before anything is spawned or installed.
   const pause = pauseMsFor(cfg.engine, cfg.pauseSeconds)
