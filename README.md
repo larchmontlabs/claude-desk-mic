@@ -34,6 +34,8 @@ With the `deepgram` engine, desk-mic streams your mic audio to Deepgram's cloud 
 
 Say "Claude, what time is it, send it" and the prompt `what time is it` is sent. The wake word starts a prompt and the send word sends it. Both are settings: turn the wake word off, change either word, or switch to `pause` mode, where each sentence is sent when you stop talking. To mute, press the mute key, or say "stop listening" or "mic off" on its own, without the wake word in front. A muted mic hears nothing, so it cannot hear you ask it to unmute: press the mute key again, or run `/mic off` and then `/mic on`.
 
+While you talk, the words show up in the prompt box. "Claude, scratch that" clears the box. Say a stop word on its own ("stop", "cancel", "wait", "hold on" or "never mind") to end Claude's running reply and stop it reading aloud. Stop words follow the wake word: say "Claude, stop", or just "stop" within 30 seconds of the last thing you said. If the speech engine is not sure it heard you right, the sentence waits in the box unsent until you say the send word.
+
 With `speakBack` on, Claude's replies are read aloud while the mic is on. The voice is a natural one from edge-tts, and falls back to the system voice if it cannot be reached. Sending a new prompt stops the reply that is being read.
 
 Dictated prompts queue until Claude is idle. The prompt box clears as soon as one is sent, so you can dictate the next one while Claude works. If a prompt is not sent, a toast shows its text, and it goes back in the box if the box is empty. Dictated prompts do not expand `@file` mentions or pasted images.
@@ -49,6 +51,7 @@ Dictated prompts queue until Claude is idle. The prompt box clears as soon as on
 | `vadLevel` (Whisper voice-detection level) | 0 to 3; higher ignores more background noise Range 0 to 3. | `2` |
 | `sendMode` (How a sentence is sent) | word: build the prompt until you say a send word. pause: send each sentence when you pause. Options: `word`, `pause`. | `word` |
 | `sendWords` (Send words) | Comma-separated words that send the prompt | `send it` |
+| `stopWords` (Stop words) | Said alone, these end Claude's running reply and stop reading aloud (comma list) | `stop, cancel, wait, hold on, never mind` |
 | `useWakeWord` (Use a wake word) | Only act on speech that starts with the wake word | `true` |
 | `wakeWords` (Wake words) | Comma-separated wake words | `claude` |
 | `pauseSeconds` (Pause length (seconds)) | Quiet time that ends a sentence (minimum 1; deepgram accepts 1 to 5) Minimum 1. | `3` |

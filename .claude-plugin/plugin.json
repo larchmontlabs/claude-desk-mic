@@ -2,14 +2,19 @@
   "name": "desk-mic",
   "version": "0.2.0",
   "description": "Talk to Claude from your computer's microphone: /mic puts what you say in the prompt box (or sends it), and can speak replies back.",
-  "author": { "name": "Ryan Galea" },
+  "author": {
+    "name": "Ryan Galea"
+  },
   "license": "MIT",
   "userConfig": {
     "engine": {
       "type": "string",
       "title": "Speech engine",
       "description": "deepgram (cloud, needs an API key) or whisper (runs on this computer)",
-      "options": ["deepgram", "whisper"],
+      "options": [
+        "deepgram",
+        "whisper"
+      ],
       "default": "deepgram"
     },
     "deepgramApiKey": {
@@ -23,7 +28,12 @@
       "type": "string",
       "title": "Whisper model",
       "description": "Model size for the whisper engine",
-      "options": ["tiny.en", "base.en", "small.en", "medium.en"],
+      "options": [
+        "tiny.en",
+        "base.en",
+        "small.en",
+        "medium.en"
+      ],
       "default": "base.en"
     },
     "vadLevel": {
@@ -38,7 +48,10 @@
       "type": "string",
       "title": "How a sentence is sent",
       "description": "word: build the prompt until you say a send word. pause: send each sentence when you pause.",
-      "options": ["word", "pause"],
+      "options": [
+        "word",
+        "pause"
+      ],
       "default": "word"
     },
     "sendWords": {
@@ -46,6 +59,12 @@
       "title": "Send words",
       "description": "Comma-separated words that send the prompt",
       "default": "send it"
+    },
+    "stopWords": {
+      "type": "string",
+      "title": "Stop words",
+      "description": "Said alone, these end Claude's running reply and stop reading aloud (comma list)",
+      "default": "stop, cancel, wait, hold on, never mind"
     },
     "useWakeWord": {
       "type": "boolean",
@@ -82,7 +101,14 @@
       "type": "string",
       "title": "Mute key",
       "description": "auto = Right Ctrl on Windows, Right Option on Mac",
-      "options": ["auto", "right ctrl", "left ctrl", "right alt", "right shift", "f13"],
+      "options": [
+        "auto",
+        "right ctrl",
+        "left ctrl",
+        "right alt",
+        "right shift",
+        "f13"
+      ],
       "default": "auto"
     }
   }

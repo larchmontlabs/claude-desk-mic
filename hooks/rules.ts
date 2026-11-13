@@ -2,7 +2,7 @@
 // word, and the listener's event lines. Pure functions, no `$`.
 
 export type Mode = 'word' | 'pause'
-export type Rules = { mode: Mode; sendWords: string[]; useWakeWord: boolean; wakeWords: string[] }
+export type Rules = { mode: Mode; sendWords: string[]; stopWords: string[]; useWakeWord: boolean; wakeWords: string[] }
 export type Awake = { isAwake: boolean; lastHeardMs: number }
 export type Engine = 'deepgram' | 'whisper'
 
@@ -10,6 +10,7 @@ export type Action =
   | { kind: 'submit'; text: string }
   | { kind: 'fill'; text: string }
   | { kind: 'clear' }
+  | { kind: 'stop' }
   | { kind: 'nothing' }
 
 export const ERROR_STAGES = ['device', 'mic', 'model', 'deepgram', 'mute_key', 'connection', 'takeover'] as const
@@ -31,6 +32,8 @@ export type MicEvent =
 // Defaults from the settings screen (plugin.json); used when a list is blank.
 const DEFAULT_SEND_WORDS = ['send it']
 const DEFAULT_WAKE_WORDS = ['claude']
+// The phone bridge's stop words (voice-bridge voice_settings.py DEFAULT_STOP_WORDS).
+const DEFAULT_STOP_WORDS = ['stop', 'cancel', 'wait', 'hold on', 'never mind']
 // Awake runs out after this much quiet (Ryan, 2026-11-06).
 export const AWAKE_FOR_MS = 30000
 
@@ -99,7 +102,16 @@ export function rulesFrom(options: Readonly<Record<string, unknown>>): Rules {
   if (mode === 'word' && sendWords.length === 0) sendWords = [...DEFAULT_SEND_WORDS]
   let wakeWords = parseWords(isStr(options.wakeWords) ? options.wakeWords : '')
   if (useWakeWord && wakeWords.length === 0) wakeWords = [...DEFAULT_WAKE_WORDS]
-  return { mode, sendWords, useWakeWord, wakeWords }
+  let stopWords = parseWords(isStr(options.stopWords) ? options.stopWords : '')
+  if (stopWords.length === 0) stopWords = [...DEFAULT_STOP_WORDS]
+  return { mode, sendWords, stopWords, useWakeWord, wakeWords }
+}
+
+/** True only when the whole sentence is a stop word ("Stop.", "hold on"), as
+ *  on the phone bridge: "stop the server" is a request, not a stop. */
+function isStopWord(text: string, words: readonly string[]): boolean {
+  const said = text.toLowerCase().split(/\s+/).join(' ').replace(/^[\s,.!?;:]+|[\s,.!?;:]+$/g, '')
+  return said !== '' && words.some(word => word.toLowerCase().split(/\s+/).join(' ') === said)
 }
 
 /** Words the speech engine should listen hard for: wake words first (only
@@ -161,6 +173,7 @@ function join(draft: string, text: string): string {
 
 /** The send-word rules alone, as before the wake word existed. */
 function plainAction(text: string, rules: Rules, draft: string): Action {
+  if (isStopWord(text, rules.stopWords)) return { kind: 'stop' }
   if (CLEAR_WORDS.test(text)) return { kind: 'clear' }
   const cut = cutSendWord(text, rules.sendWords)
   const full = join(draft, cut.text)
@@ -207,6 +220,6 @@ export function previewText(text: string, rules: Rules, draft: string, awake: Aw
     if (!isAwake && rest === undefined) return undefined
     sentence = rest ?? text
   }
-  if (CLEAR_WORDS.test(sentence)) return undefined
+  if (CLEAR_WORDS.test(sentence) || isStopWord(sentence, rules.stopWords)) return undefined
   return join(draft, cutSendWord(sentence, rules.sendWords).text)
 }

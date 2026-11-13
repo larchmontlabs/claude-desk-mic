@@ -67,6 +67,8 @@ type State = {
   // fill, so it may show any of them). Gone once the sentence is finished.
   preview: { base: string; shown: Set<string> } | undefined
   awakeTimer: { cancel: () => void } | undefined
+  // The main loop's running turn, so a stop word can end it.
+  turnId: string | undefined
   // Learned at start; speak-back needs them too.
   python: string
   stateDir: string
@@ -311,6 +313,24 @@ async function onUtterance($: Ctx, st: State, text: string, unsure = false): Pro
       return
     }
     st.awake = plan.awake
+  } else if (action.kind === 'stop') {
+    st.awake = plan.awake
+    // Take the stop word's live words back out; the draft stays.
+    if (hadPreview && (await $.prompt.read()).text === read.text) await $.prompt.fill({ text: box.text, mode: 'replace' })
+    const turnId = st.turnId
+    let stopped = false
+    if (turnId !== undefined) {
+      try {
+        await $.turn.abort({ turnId })
+        stopped = true
+      } catch (err) {
+        $.ui.log(`desk-mic: could not stop the reply: ${String(err)}`, { to: 'debug' })
+      }
+      if (st.turnId === turnId) st.turnId = undefined
+    }
+    const hadSpeech = st.speech !== undefined
+    await stopSpeech($, st).killed
+    $.ui.toast(stopped ? 'Stopped.' : hadSpeech ? 'Stopped reading.' : 'Nothing to stop.')
   } else if (action.kind === 'clear') {
     st.awake = plan.awake
     await $.prompt.fill({ text: '', mode: 'replace' })
@@ -554,6 +574,7 @@ export const register: Register = (on, options) => {
     awake: ASLEEP,
     preview: undefined,
     awakeTimer: undefined,
+    turnId: undefined,
     python: '',
     stateDir: '',
     platform: 'win32',
@@ -578,8 +599,14 @@ export const register: Register = (on, options) => {
     return next(e)
   })
 
+  on('turn.start', async ($, e, next) => {
+    if (e.agentId === undefined) st.turnId = e.turnId
+    return next(e)
+  })
+
   // Speak-back: every main-loop answer while the mic is on.
   on('turn.complete', async ($, e, next) => {
+    if (e.agentId === undefined && e.turnId === st.turnId) st.turnId = undefined
     const isSpoken = st.cfg.speakBack && st.phase === 'on' && e.agentId === undefined && e.reason === 'answer'
     if (isSpoken && e.answer.trim() !== '') void speak($, st, e.answer)
     return next(e)

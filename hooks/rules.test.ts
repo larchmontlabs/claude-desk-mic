@@ -17,8 +17,8 @@ import {
 const ASLEEP: Awake = { isAwake: false, lastHeardMs: 0 }
 const AWAKE: Awake = { isAwake: true, lastHeardMs: 0 }
 
-const WORD: Rules = { mode: 'word', sendWords: ['send it'], useWakeWord: false, wakeWords: ['claude'] }
-const PAUSE: Rules = { mode: 'pause', sendWords: ['send it'], useWakeWord: false, wakeWords: ['claude'] }
+const WORD: Rules = { mode: 'word', sendWords: ['send it'], stopWords: ['stop', 'cancel', 'wait', 'hold on', 'never mind'], useWakeWord: false, wakeWords: ['claude'] }
+const PAUSE: Rules = { mode: 'pause', sendWords: ['send it'], stopWords: ['stop', 'cancel', 'wait', 'hold on', 'never mind'], useWakeWord: false, wakeWords: ['claude'] }
 const WAKE_WORD: Rules = { ...WORD, useWakeWord: true }
 const WAKE_PAUSE: Rules = { ...PAUSE, useWakeWord: true }
 
@@ -210,14 +210,14 @@ test('awake expires after 30 s of quiet', async () => {
 test('rulesFrom splits comma lists and lowercases nothing', async () => {
   expect(
     rulesFrom({ sendMode: 'word', sendWords: 'send it, over', useWakeWord: true, wakeWords: 'Claude, Computer' }),
-  ).toEqual({ mode: 'word', sendWords: ['send it', 'over'], useWakeWord: true, wakeWords: ['Claude', 'Computer'] })
+  ).toMatchObject({ mode: 'word', sendWords: ['send it', 'over'], useWakeWord: true, wakeWords: ['Claude', 'Computer'] })
   expect(rulesFrom({ sendMode: 'word', sendWords: 'send it', useWakeWord: true, wakeWords: ' , ' }).wakeWords).toEqual([
     'claude',
   ])
   expect(rulesFrom({ sendMode: 'word', sendWords: '', useWakeWord: false, wakeWords: '' }).sendWords).toEqual([
     'send it',
   ])
-  expect(rulesFrom({ sendMode: 'pause', sendWords: '', useWakeWord: false, wakeWords: '' })).toEqual({
+  expect(rulesFrom({ sendMode: 'pause', sendWords: '', useWakeWord: false, wakeWords: '' })).toMatchObject({
     mode: 'pause',
     sendWords: [],
     useWakeWord: false,
@@ -229,19 +229,20 @@ test('rulesFrom reads the manifest defaults', async () => {
   expect(rulesFrom({ sendMode: 'word', sendWords: 'send it', useWakeWord: true, wakeWords: 'claude' })).toEqual({
     mode: 'word',
     sendWords: ['send it'],
+    stopWords: ['stop', 'cancel', 'wait', 'hold on', 'never mind'],
     useWakeWord: true,
     wakeWords: ['claude'],
   })
 })
 
 test('keyterms leave out the wake word when it is off', async () => {
-  expect(keyterms({ useWakeWord: false, wakeWords: ['claude'], sendWords: ['send it'], mode: 'word' })).toEqual([
+  expect(keyterms({ useWakeWord: false, wakeWords: ['claude'], sendWords: ['send it'], stopWords: [], mode: 'word' })).toEqual([
     'send it',
   ])
 })
 
 test('keyterms put wake words first', async () => {
-  expect(keyterms({ useWakeWord: true, wakeWords: ['claude'], sendWords: ['send it'], mode: 'word' })).toEqual([
+  expect(keyterms({ useWakeWord: true, wakeWords: ['claude'], sendWords: ['send it'], stopWords: [], mode: 'word' })).toEqual([
     'claude',
     'send it',
   ])
@@ -283,4 +284,33 @@ test('previewText shows nothing until the wake word is heard', async () => {
 
 test('previewText leaves clear words alone', async () => {
   expect(previewText('scratch that', WORD, 'list PRs', ASLEEP, 0)).toBeUndefined()
+})
+
+
+// ---- stop words --------------------------------------------------------------
+
+test('a stop word said alone stops; inside a request it does not', async () => {
+  expect(act('stop', WORD, '')).toEqual({ kind: 'stop' })
+  expect(act('Stop.', WORD, '')).toEqual({ kind: 'stop' })
+  expect(act('Hold on!', WORD, 'list PRs')).toEqual({ kind: 'stop' })
+  expect(act('stop the server', WORD, '')).toEqual({ kind: 'fill', text: 'stop the server' })
+  expect(act('stop', PAUSE, '')).toEqual({ kind: 'stop' })
+})
+
+test('a stop word follows the wake word rule', async () => {
+  expect(planUtterance('stop', WAKE_WORD, '', ASLEEP, 0).action).toEqual({ kind: 'nothing' })
+  expect(planUtterance('Claude, stop', WAKE_WORD, '', ASLEEP, 0).action).toEqual({ kind: 'stop' })
+  expect(planUtterance('wait', WAKE_WORD, '', AWAKE, 1000)).toEqual({
+    action: { kind: 'stop' },
+    awake: { isAwake: true, lastHeardMs: 1000 },
+  })
+})
+
+test('rulesFrom reads stop words, with the phone defaults when blank', async () => {
+  expect(rulesFrom({ stopWords: 'halt, enough' }).stopWords).toEqual(['halt', 'enough'])
+  expect(rulesFrom({}).stopWords).toEqual(['stop', 'cancel', 'wait', 'hold on', 'never mind'])
+})
+
+test('previewText leaves a stop word out of the box', async () => {
+  expect(previewText('stop', WORD, 'list PRs', ASLEEP, 0)).toBeUndefined()
 })

@@ -7,8 +7,8 @@ import { LISTENER_EVENTS_JSONL } from './fixtures/listener-events'
 import type { Rules } from './rules'
 import { KEY_HINT, parsePidLine, statusText, treeKillArgv } from './register'
 
-const WORD: Rules = { mode: 'word', sendWords: ['send it'], useWakeWord: false, wakeWords: ['claude'] }
-const PAUSE: Rules = { mode: 'pause', sendWords: ['send it'], useWakeWord: false, wakeWords: ['claude'] }
+const WORD: Rules = { mode: 'word', sendWords: ['send it'], stopWords: ['stop', 'cancel', 'wait', 'hold on', 'never mind'], useWakeWord: false, wakeWords: ['claude'] }
+const PAUSE: Rules = { mode: 'pause', sendWords: ['send it'], stopWords: ['stop', 'cancel', 'wait', 'hold on', 'never mind'], useWakeWord: false, wakeWords: ['claude'] }
 const WAKE: Rules = { ...WORD, useWakeWord: true }
 
 /** The fixture line of one event type, as the listener writes it. */
@@ -102,6 +102,7 @@ function rig(on: On, o: RigOptions = {}) {
     shownBefore: '',
     fills: [] as string[],
     submits: [] as { text: string; origin: unknown }[],
+    aborts: [] as string[],
     writes: {} as Record<string, string>,
     nextPid: 77,
     get status() {
@@ -127,6 +128,11 @@ function rig(on: On, o: RigOptions = {}) {
   on('session.start', (_, e) => ({ cwd: e.cwd }))
   on('session.end', (_, e) => ({ sessionId: e.sessionId }))
   on('turn.complete', (_, e) => ({ text: e.answer }))
+  on('turn.start', (_, e) => ({ turnId: e.turnId }))
+  on('turn.abort', (_, e) => {
+    r.aborts.push(e.turnId)
+    return { value: undefined }
+  })
   // Paths are kept with forward slashes (the engine hands them over with backslashes on Windows).
   const key = (path: string) => path.replace(/\\/g, '/')
   on('fs.read', (_, e) => ({ value: r.writes[key(e.path)] ?? 'pkg==1\n' }))
@@ -897,4 +903,41 @@ test('an unsure sentence without the wake word is ignored', { options: { engine:
   await say(r, UNSURE('the tv is on'))
   expect(r.fills).toEqual([])
   expect(r.submits).toEqual([])
+})
+
+
+// ---- stop words --------------------------------------------------------------
+
+test('"stop" ends the running reply and stops speech', { options: { ...SPEAK, useWakeWord: false } }, async ($, on) => {
+  const r = rig(on)
+  await begin($)
+  await micOn($, r)
+  await $.turn.start({ text: 'list PRs', turnId: 't9' })
+  await say(r, UTTER('stop'))
+  expect(r.aborts).toEqual(['t9'])
+  expect(r.submits).toEqual([])
+  expect(r.toasts.some(t => t.includes('Stopped'))).toBe(true)
+})
+
+test('"stop" with no reply running stops nothing and keeps the draft', { options: { engine: 'whisper', useWakeWord: false } }, async ($, on) => {
+  const r = rig(on)
+  await begin($)
+  await micOn($, r)
+  await $.turn.start({ text: 'list PRs', turnId: 't9' })
+  await $.turn.complete(turn('done', { turnId: 't9' }))
+  await say(r, UTTER('list the PRs'))
+  await say(r, PARTIAL('stop'))
+  await say(r, UTTER('stop'))
+  expect(r.aborts).toEqual([])
+  expect(r.draft).toBe('list the PRs')
+})
+
+test('a subagent turn is not the one "stop" ends', { options: { engine: 'whisper', useWakeWord: false } }, async ($, on) => {
+  const r = rig(on)
+  await begin($)
+  await micOn($, r)
+  await $.turn.start({ text: 'main', turnId: 'main1' })
+  await $.turn.start({ text: 'sub', turnId: 'sub1', agentId: 'a1' })
+  await say(r, UTTER('cancel'))
+  expect(r.aborts).toEqual(['main1'])
 })
