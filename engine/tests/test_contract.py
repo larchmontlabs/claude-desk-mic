@@ -69,6 +69,7 @@ def _all_emit_paths(tmp_path, monkeypatch) -> list[str]:
     async def drive(listener):
         await listener.on_partial("run the")
         await listener.on_utterance_full("run the tests", 0.9)
+        await listener.on_utterance_full("run the tests", 0.3)
         await listener.on_utterance_full("mic off", 0.9)
         speaking[0] = True
         sd.streams[0].callback(audio(), 160, None, None)
@@ -118,7 +119,7 @@ def _all_emit_paths(tmp_path, monkeypatch) -> list[str]:
 
 def test_fixture_has_every_event_and_stage():
     keys = set(_fixture_shapes())
-    assert {t for t, _ in keys} == {"ready", "loading", "partial", "utterance", "state", "speaking", "takeover", "error"}
+    assert {t for t, _ in keys} == {"ready", "loading", "partial", "utterance", "unsure", "state", "speaking", "takeover", "error"}
     assert {s for t, s in keys if t == "error"} == STAGES
 
 

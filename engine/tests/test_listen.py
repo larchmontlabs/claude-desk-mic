@@ -52,7 +52,13 @@ def test_utterance_fillers_are_stripped():
 
 def test_low_confidence_is_dropped():
     listener, _, stdout, _ = _listener()
-    asyncio.run(listener.on_utterance_full("list the open pull requests", 0.3))
+    asyncio.run(listener.on_utterance_full("um, list the open pull requests", 0.3))
+    assert _lines(stdout) == [{"type": "unsure", "text": "list the open pull requests"}]
+
+
+def test_too_short_is_dropped_and_clears_live_words():
+    listener, _, stdout, _ = _listener()
+    asyncio.run(listener.on_utterance_full("um", 0.9))
     assert _lines(stdout) == [{"type": "partial", "text": ""}]
 
 
@@ -541,9 +547,8 @@ def test_partial_is_dropped_while_muted():
     assert len(_lines(stdout)) == before
 
 
-def test_a_dropped_sentence_clears_the_live_words():
+def test_a_voice_command_clears_the_live_words():
     listener, state, stdout, _ = _listener()
-    asyncio.run(listener.on_utterance_full("list the open pull requests", 0.3))
     asyncio.run(listener.on_utterance_full("mic off", 0.9))
     partials = [e for e in _lines(stdout) if e["type"] == "partial"]
-    assert partials == [{"type": "partial", "text": ""}, {"type": "partial", "text": ""}]
+    assert partials == [{"type": "partial", "text": ""}]

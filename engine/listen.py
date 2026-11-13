@@ -85,6 +85,13 @@ class Listener:
         if not self.state.listening:
             log.info("Muted, dropping stray utterance: %r", text)
             return
+        if confidence is not None and confidence < MIN_CONFIDENCE:
+            # Not sure it heard right: never sent as is, but the mod can show
+            # it in the box (unsent) for the person to send or clear.
+            unsure = accept(text, None, MIN_CHARS, MIN_CONFIDENCE)
+            log.info("Unsure (confidence %.2f < %.2f): %r", confidence, MIN_CONFIDENCE, text)
+            self.out.event({"type": "unsure", "text": unsure} if unsure else {"type": "partial", "text": ""})
+            return
         cleaned = accept(text, confidence, MIN_CHARS, MIN_CONFIDENCE)
         if cleaned is None:
             # Its live words may be showing in the prompt box; take them away.

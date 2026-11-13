@@ -6,6 +6,7 @@ export const LISTENER_EVENTS_JSONL = `
 {"type":"loading","model":"base.en"}
 {"type":"partial","text":"run the"}
 {"type":"utterance","text":"run the tests"}
+{"type":"unsure","text":"run the tests"}
 {"type":"state","listening":false,"source":"voice command"}
 {"type":"speaking","playing":true}
 {"type":"takeover","previous_pid":4141}

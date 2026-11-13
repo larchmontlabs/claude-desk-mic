@@ -21,6 +21,7 @@ function fixtureLine(type: string): string {
 const READY = (muteKey: string | null) =>
   JSON.stringify({ type: 'ready', device: 'Desk Microphone', mute_key: muteKey, pid: 4242 })
 const UTTER = (text: string) => JSON.stringify({ type: 'utterance', text })
+const UNSURE = (text: string) => JSON.stringify({ type: 'unsure', text })
 const PARTIAL = (text: string) => JSON.stringify({ type: 'partial', text })
 const STATE = (listening: boolean) => JSON.stringify({ type: 'state', listening, source: 'mute key' })
 const ERROR = (stage: string, message: string) => JSON.stringify({ type: 'error', stage, message })
@@ -870,4 +871,30 @@ test('live words are not piled up when the box is slow to update', { options: { 
   await say(r, UTTER('Claude, does this use the same version, send it'))
   expect(r.submits.map(s => s.text)).toEqual(['does this use the same version'])
   expect(r.draft).toBe('')
+})
+
+
+// ---- a sentence the speech engine was not sure of -------------------------
+
+test('an unsure sentence waits in the box, unsent, until "send it"', { options: { engine: 'whisper' } }, async ($, on) => {
+  const r = rig(on)
+  await begin($)
+  await micOn($, r)
+  await say(r, PARTIAL("Claude, what's the weather"))
+  await say(r, UNSURE("Claude, what's the weather today send it"))
+  expect(r.submits).toEqual([])
+  expect(r.draft).toBe("what's the weather today")
+  expect(r.toasts.some(t => t.includes('send it'))).toBe(true)
+  await say(r, UTTER('send it'))
+  expect(r.submits.map(s => s.text)).toEqual(["what's the weather today"])
+  expect(r.draft).toBe('')
+})
+
+test('an unsure sentence without the wake word is ignored', { options: { engine: 'whisper' } }, async ($, on) => {
+  const r = rig(on)
+  await begin($)
+  await micOn($, r)
+  await say(r, UNSURE('the tv is on'))
+  expect(r.fills).toEqual([])
+  expect(r.submits).toEqual([])
 })

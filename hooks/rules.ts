@@ -22,6 +22,7 @@ export type MicEvent =
   | { type: 'loading'; model: string }
   | { type: 'partial'; text: string }
   | { type: 'utterance'; text: string }
+  | { type: 'unsure'; text: string }
   | { type: 'state'; listening: boolean; source: string }
   | { type: 'speaking'; playing: boolean }
   | { type: 'takeover'; previous_pid: number }
@@ -55,6 +56,7 @@ function isMicEvent(v: Json): boolean {
       return isStr(v.model)
     case 'partial':
     case 'utterance':
+    case 'unsure':
       return isStr(v.text)
     case 'state':
       return isBool(v.listening) && isStr(v.source)

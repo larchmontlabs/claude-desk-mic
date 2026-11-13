@@ -281,12 +281,27 @@ async function dropPreview($: Ctx, st: State): Promise<void> {
   if (now !== preview.base && preview.shown.has(now)) await $.prompt.fill({ text: preview.base, mode: 'replace' })
 }
 
-async function onUtterance($: Ctx, st: State, text: string): Promise<void> {
+/** `unsure`: the speech engine was not sure it heard right, so the sentence
+ *  may fill the box but is never sent until the person says the send word. */
+async function onUtterance($: Ctx, st: State, text: string, unsure = false): Promise<void> {
   const read = await $.prompt.read()
   const box = { ...read, text: draftUnderPreview(st, read.text) }
   const hadPreview = isOurs(st, read.text) && read.text !== box.text
   st.preview = undefined
-  const plan = planUtterance(text, st.cfg.rules, box.text, st.awake, await $.clock.now())
+  const now = await $.clock.now()
+  let plan = planUtterance(text, st.cfg.rules, box.text, st.awake, now)
+  if (unsure && plan.action.kind === 'submit') {
+    // Hold it in the box, still awake, so "send it" alone sends it.
+    plan = { action: { kind: 'fill', text: plan.action.text }, awake: { isAwake: true, lastHeardMs: now } }
+  }
+  if (unsure && plan.action.kind === 'fill') {
+    const send = st.cfg.rules.sendWords[0]
+    $.ui.toast(
+      send
+        ? `Not sure I heard that right, so it was not sent. Say "${send}" to send it, or "scratch that".`
+        : 'Not sure I heard that right, so it was not sent. Your next sentence sends it, or say "scratch that".',
+    )
+  }
   const action = plan.action
   if (action.kind === 'fill') {
     const filled = await $.prompt.fill({ text: action.text, mode: 'replace' })
@@ -381,6 +396,9 @@ async function handle($: Ctx, st: State, myRun: number, event: MicEvent): Promis
       return
     case 'utterance':
       if (st.phase === 'on') await onUtterance($, st, event.text)
+      break
+    case 'unsure':
+      if (st.phase === 'on') await onUtterance($, st, event.text, true)
       break
   }
   await refresh($, st)
