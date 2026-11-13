@@ -243,3 +243,19 @@ def test_no_partial_callback_is_fine():
 
     stt = DeepgramSTT(full, closed)
     run(stt.handle_transcript(result([("hello", 0.0, 0.5)], 0.9)))
+    assert [w["text"] for w in stt._words] == ["hello"]
+
+
+def test_no_speech_text_in_the_info_log(caplog):
+    import logging
+
+    caplog.set_level(logging.INFO)
+    h = Harness()
+
+    async def go():
+        await h.stt.handle_transcript(result([("private", 0.0, 0.5)], 0.9))
+        await h.stt.handle_utterance_end(NS(last_word_end=0.5))
+
+    run(go())
+    assert h.calls == [("private", 0.9)]
+    assert not any("private" in r.getMessage() for r in caplog.records if r.levelno >= logging.INFO)

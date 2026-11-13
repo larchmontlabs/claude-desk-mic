@@ -12,6 +12,7 @@ import {
   pauseMsFor,
   planUtterance,
   previewText,
+  stopWordSaid,
   rulesFrom,
   splitLines,
 } from './rules'
@@ -65,7 +66,11 @@ type State = {
   // Live words on show in the box: what the box held before them, and every
   // text the mod put there for this sentence (a read of the box can lag a
   // fill, so it may show any of them). Gone once the sentence is finished.
-  preview: { base: string; shown: Set<string> } | undefined
+  preview: { base: string; shown: string; paused: boolean } | undefined
+  // What the mod last put in the box, and its earlier fills a lagging read may still return.
+  box: { latest: string | undefined; older: Set<string>; lastRead: string }
+  // Dictated prompts waiting for the session to be idle.
+  queued: number
   awakeTimer: { cancel: () => void } | undefined
   // The main loop's running turn, so a stop word can end it.
   turnId: string | undefined
@@ -227,6 +232,7 @@ function failed($: Ctx, st: State, myRun: number, why: string, detail = ''): voi
   const child = st.listener
   st.listener = undefined
   if (child) void child.return(undefined as never).catch(() => undefined)
+  void dropPreview($, st).catch(() => undefined)
   $.ui.status(undefined)
   $.ui.toast(`Mic stopped: ${why}`)
   // The toast goes away; keep the reason (and the listener's last output) where it can be read later.
@@ -242,73 +248,120 @@ ${detail}
   void stopSpeech($, st).killed
 }
 
-/** Whether the box shows only what the mod put there for this sentence. */
-function isOurs(st: State, boxText: string): boolean {
-  return st.preview !== undefined && (boxText === st.preview.base || st.preview.shown.has(boxText))
+/** Reads the prompt box. A read can lag the mod's last fill and return a text
+ *  the mod put there earlier; that counts as the latest fill until a read
+ *  confirms it. Any other text means someone else changed the box. */
+async function readBox($: Ctx, st: State): Promise<string> {
+  const text = (await $.prompt.read()).text
+  const box = st.box
+  if (box.latest !== undefined) {
+    if (text === box.latest) {
+      box.older.clear()
+    } else if (box.older.has(text)) {
+      return box.latest
+    } else {
+      box.latest = undefined
+      box.older.clear()
+    }
+  }
+  box.lastRead = text
+  return text
 }
 
-/** The box's text without the mod's live words, if they are still what it shows. */
-function draftUnderPreview(st: State, boxText: string): string {
-  return st.preview && isOurs(st, boxText) ? st.preview.base : boxText
+/** Replaces the box's text, remembering it so a lagging read is recognised. */
+async function fillBox($: Ctx, st: State, text: string): Promise<boolean> {
+  const { isFilled } = await $.prompt.fill({ text, mode: 'replace' })
+  if (isFilled) {
+    st.box.older.add(st.box.latest ?? st.box.lastRead)
+    st.box.latest = text
+  }
+  return isFilled
+}
+
+/** Forgets the mod's fills: the box was sent or changed by someone else. */
+function forgetBox(st: State): void {
+  st.box = { latest: undefined, older: new Set(), lastRead: '' }
+}
+
+/** Whether the box still shows this sentence's live words (or the draft under them). */
+function showsPreview(st: State, boxText: string): boolean {
+  const p = st.preview
+  return p !== undefined && !p.paused && (boxText === p.shown || boxText === p.base)
 }
 
 /** Shows the words heard so far in the prompt box, after the draft. An empty
- *  text (the sentence was thrown away) puts the box back as it was. */
+ *  text (the sentence was thrown away) puts the box back as it was. Typing
+ *  while live words show pauses them for the rest of the sentence. */
 async function onPartial($: Ctx, st: State, text: string): Promise<void> {
-  const box = await $.prompt.read()
-  const base = draftUnderPreview(st, box.text)
+  if (st.preview?.paused) {
+    if (text.trim() === '') st.preview = undefined
+    return
+  }
+  const now = await readBox($, st)
+  if (st.preview && !showsPreview(st, now)) {
+    st.preview = { ...st.preview, paused: true }
+    return
+  }
+  const base = st.preview ? st.preview.base : now
   const shown = text.trim() === '' ? undefined : previewText(text, st.cfg.rules, base, st.awake, await $.clock.now())
   if (shown === undefined) {
-    if (isOurs(st, box.text) && box.text !== base) await $.prompt.fill({ text: base, mode: 'replace' })
+    if (st.preview && now !== base) await fillBox($, st, base)
     st.preview = undefined
     return
   }
-  // Keep the texts already shown for this sentence unless someone else changed the box.
-  const seen = st.preview && isOurs(st, box.text) ? st.preview.shown : new Set<string>()
-  seen.add(shown)
-  if (shown === box.text) {
-    st.preview = { base, shown: seen }
+  if (shown !== now && !(await fillBox($, st, shown))) {
+    st.preview = undefined
     return
   }
-  const filled = await $.prompt.fill({ text: shown, mode: 'replace' })
-  st.preview = filled.isFilled ? { base, shown: seen } : undefined
+  st.preview = { base, shown, paused: false }
 }
 
 /** Takes the live words out of the box, if they are still there. */
 async function dropPreview($: Ctx, st: State): Promise<void> {
-  if (!st.preview) return
   const preview = st.preview
   st.preview = undefined
-  const now = (await $.prompt.read()).text
-  if (now !== preview.base && preview.shown.has(now)) await $.prompt.fill({ text: preview.base, mode: 'replace' })
+  if (!preview || preview.paused) return
+  const now = await readBox($, st)
+  if (now === preview.shown && now !== preview.base) await fillBox($, st, preview.base)
 }
 
 /** `unsure`: the speech engine was not sure it heard right, so the sentence
- *  may fill the box but is never sent until the person says the send word. */
+ *  may fill the box but is never sent, stopped or cleared on its own word. */
 async function onUtterance($: Ctx, st: State, text: string, unsure = false): Promise<void> {
-  const read = await $.prompt.read()
-  const box = { ...read, text: draftUnderPreview(st, read.text) }
-  const hadPreview = isOurs(st, read.text) && read.text !== box.text
+  const now = await readBox($, st)
+  const isShowing = showsPreview(st, now)
+  const draft = isShowing ? st.preview!.base : now
+  const hadPreview = isShowing && now !== draft
   st.preview = undefined
-  const now = await $.clock.now()
-  let plan = planUtterance(text, st.cfg.rules, box.text, st.awake, now)
-  if (unsure && plan.action.kind === 'submit') {
-    // Hold it in the box, still awake, so "send it" alone sends it.
-    plan = { action: { kind: 'fill', text: plan.action.text }, awake: { isAwake: true, lastHeardMs: now } }
+  const nowMs = await $.clock.now()
+  let plan = planUtterance(text, st.cfg.rules, draft, st.awake, nowMs)
+  // While a reply runs or is read aloud, a bare stop word always works.
+  const isBusy = st.turnId !== undefined || st.speech !== undefined
+  if (isBusy && plan.action.kind === 'nothing' && stopWordSaid(text, st.cfg.rules)) {
+    plan = { action: { kind: 'stop' }, awake: plan.awake }
   }
-  if (unsure && plan.action.kind === 'fill') {
-    const send = st.cfg.rules.sendWords[0]
-    $.ui.toast(
-      send
-        ? `Not sure I heard that right, so it was not sent. Say "${send}" to send it, or "scratch that".`
-        : 'Not sure I heard that right, so it was not sent. Your next sentence sends it, or say "scratch that".',
-    )
+  if (unsure) {
+    const kind = plan.action.kind
+    if (plan.action.kind === 'submit') {
+      // Hold it in the box, still awake, so the send word alone sends it.
+      plan = { action: { kind: 'fill', text: plan.action.text }, awake: { isAwake: true, lastHeardMs: nowMs } }
+      const send = st.cfg.rules.sendWords[0]
+      $.ui.toast(
+        send
+          ? `Not sure I heard that right, so it was not sent. Say "${send}" to send it, or "scratch that".`
+          : 'Not sure I heard that right, so it was not sent. Your next sentence sends it, or say "scratch that".',
+      )
+    } else if (kind === 'stop' || kind === 'clear') {
+      plan = { action: { kind: 'nothing' }, awake: plan.awake }
+      $.ui.toast('Not sure I heard that right. Say it again.')
+    }
   }
   const action = plan.action
+  // Whether the box still holds what was read (what the mic put there).
+  const unchanged = async () => (await readBox($, st)) === now
   if (action.kind === 'fill') {
-    const filled = await $.prompt.fill({ text: action.text, mode: 'replace' })
     // A dialog can hold the prompt box; don't lose what was said.
-    if (!filled.isFilled) {
+    if (!(await fillBox($, st, action.text))) {
       $.ui.toast(`Mic heard (box busy): ${text}`)
       return
     }
@@ -316,7 +369,7 @@ async function onUtterance($: Ctx, st: State, text: string, unsure = false): Pro
   } else if (action.kind === 'stop') {
     st.awake = plan.awake
     // Take the stop word's live words back out; the draft stays.
-    if (hadPreview && (await $.prompt.read()).text === read.text) await $.prompt.fill({ text: box.text, mode: 'replace' })
+    if (hadPreview && (await unchanged())) await fillBox($, st, draft)
     const turnId = st.turnId
     let stopped = false
     if (turnId !== undefined) {
@@ -330,24 +383,23 @@ async function onUtterance($: Ctx, st: State, text: string, unsure = false): Pro
     }
     const hadSpeech = st.speech !== undefined
     await stopSpeech($, st).killed
-    $.ui.toast(stopped ? 'Stopped.' : hadSpeech ? 'Stopped reading.' : 'Nothing to stop.')
+    const said = stopped ? 'Stopped.' : hadSpeech ? 'Stopped reading.' : 'Nothing to stop.'
+    // There is no way to take back a queued prompt, so say it will still go.
+    $.ui.toast(st.queued > 0 ? `${said} A dictated prompt is still queued and will be sent.` : said)
   } else if (action.kind === 'clear') {
     st.awake = plan.awake
-    await $.prompt.fill({ text: '', mode: 'replace' })
+    await fillBox($, st, '')
   } else if (action.kind === 'submit') {
     st.awake = plan.awake
     // A plugin prompt waits until the session is idle, which can take a whole
     // turn. Never wait on it here: the listener's events must keep flowing.
     void submitted($, st, action.text)
-    // The text now belongs to the submit, so free the box for the next prompt,
-    // but only if it still holds what was read (what the mic put there).
-    if (read.text.trim() !== '' && (await $.prompt.read()).text === read.text) {
-      await $.prompt.fill({ text: '', mode: 'replace' })
-    }
+    // The text now belongs to the submit, so free the box for the next prompt.
+    if (now.trim() !== '' && (await unchanged())) await fillBox($, st, '')
   } else {
     st.awake = plan.awake
     // Nothing to do with the sentence: take its live words back out.
-    if (hadPreview && (await $.prompt.read()).text === read.text) await $.prompt.fill({ text: box.text, mode: 'replace' })
+    if (hadPreview && (await unchanged())) await fillBox($, st, draft)
   }
   if (st.awake.isAwake) {
     // Refresh once the awake stretch runs out, so the status asks for the wake word again.
@@ -359,11 +411,14 @@ async function onUtterance($: Ctx, st: State, text: string, unsure = false): Pro
 /** Sends a dictated prompt and deals with the result whenever it comes. */
 async function submitted($: Ctx, st: State, text: string): Promise<void> {
   let isSent = false
+  st.queued++
   try {
     const result = await $.prompt.submit({ text, asUser: true })
     isSent = result.drop === undefined
   } catch {
     isSent = false
+  } finally {
+    st.queued--
   }
   try {
     if (isSent) {
@@ -374,7 +429,7 @@ async function submitted($: Ctx, st: State, text: string): Promise<void> {
     }
     $.ui.toast(`Not sent: ${text}`)
     // Keep the draft: put it back, unless something new is in the box by now.
-    if ((await $.prompt.read()).text.trim() === '') await $.prompt.fill({ text, mode: 'replace' })
+    if ((await readBox($, st)).trim() === '') await fillBox($, st, text)
   } catch (err) {
     $.ui.log(`desk-mic: after a dictated submit: ${String(err)}`, { to: 'debug' })
   }
@@ -507,6 +562,7 @@ async function stopMic($: Ctx, st: State): Promise<void> {
   st.listener = undefined
   // Ending the stream kills the listener on both OS.
   if (child) void child.return(undefined as never).catch(() => undefined)
+  await dropPreview($, st)
   await stopSpeech($, st).killed
   $.ui.status(undefined)
 }
@@ -579,6 +635,8 @@ export const register: Register = (on, options) => {
     muteKeyProblem: '',
     awake: ASLEEP,
     preview: undefined,
+    box: { latest: undefined, older: new Set(), lastRead: '' },
+    queued: 0,
     awakeTimer: undefined,
     turnId: undefined,
     python: '',
@@ -601,6 +659,9 @@ export const register: Register = (on, options) => {
   // Any prompt, typed or spoken, stops speech and ends the awake stretch.
   on('prompt.submit', async ($, e, next) => {
     st.awake = { ...ASLEEP, lastHeardMs: st.awake.lastHeardMs }
+    // A typed send empties the box; the mod's earlier fills mean nothing now.
+    st.preview = undefined
+    forgetBox(st)
     await stopSpeech($, st).killed
     return next(e)
   })

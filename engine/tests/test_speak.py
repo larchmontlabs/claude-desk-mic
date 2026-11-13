@@ -161,3 +161,64 @@ def test_a_later_piece_failing_reads_the_rest_with_the_os_voice(tmp_path):
     assert fallback[0][0] == "sapi"
     heard = " ".join(played + [fallback[0][1]])
     assert heard.split() == text.split()
+
+
+def test_pieces_live_in_the_state_folder_and_are_removed_after_a_fallback(tmp_path):
+    import time
+
+    text = " ".join(f"Sentence number {i} is here." for i in range(20))
+    sp.speak(text, "v", "edge", tmp_path / "f", synth=_timed_synth(0.0, fail_on="number 10 "),
+             player=lambda p: None, os_speak=lambda b, t: None, platform="win32", wait_s=1.0, piece_chars=60)
+    time.sleep(0.2)
+    assert list((tmp_path / "speech").glob("*")) == []
+
+
+def test_no_more_pieces_are_made_after_the_os_voice_takes_over(tmp_path):
+    import time
+
+    release = threading.Event()
+    calls = []
+
+    def synth(text, voice, out):
+        calls.append(text)
+        release.wait(5)
+        Path(out).write_bytes(b"x")
+
+    text = " ".join(f"Sentence number {i} is here." for i in range(20))
+    try:
+        sp.speak(text, "v", "edge", tmp_path / "f", synth=synth, player=lambda p: None,
+                 os_speak=lambda b, t: None, platform="win32", wait_s=0.1, piece_chars=60)
+    finally:
+        release.set()
+    time.sleep(0.3)
+    assert len(calls) == 1
+    assert list((tmp_path / "speech").glob("*")) == []
+
+
+def test_old_pieces_are_swept_at_start(tmp_path):
+    (tmp_path / "speech").mkdir()
+    (tmp_path / "speech" / "old.mp3").write_bytes(b"x")
+    sp.speak("Hi there.", "v", "edge", tmp_path / "f", synth=_ok_synth, player=lambda p: None, platform="win32")
+    assert list((tmp_path / "speech").glob("*")) == []
+
+
+def test_a_killed_player_ends_the_reading(tmp_path):
+    played, fallback = [], []
+
+    def player(path):
+        played.append(path)
+        raise sp.PlayerStopped()
+
+    text = " ".join(f"Sentence number {i} is here." for i in range(20))
+    sp.speak(text, "v", "edge", tmp_path / "f", synth=_timed_synth(0.0), player=player,
+             os_speak=lambda b, t: fallback.append(t), platform="darwin", piece_chars=60)
+    assert len(played) == 1 and fallback == []
+
+
+def test_play_raises_when_the_player_was_killed(monkeypatch):
+    monkeypatch.setattr(sp.shutil, "which", lambda name: "ffplay")
+    monkeypatch.setattr(sp, "_run", lambda argv, data=None: -15)
+    with pytest.raises(sp.PlayerStopped):
+        sp._play("x.mp3")
+    monkeypatch.setattr(sp, "_run", lambda argv, data=None: 0)
+    sp._play("x.mp3")

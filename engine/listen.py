@@ -83,13 +83,19 @@ class Listener:
 
     async def on_utterance_full(self, text: str, confidence: float | None) -> None:
         if not self.state.listening:
-            log.info("Muted, dropping stray utterance: %r", text)
+            log.info("Muted, dropping a stray sentence (%d chars)", len(text))
             return
         if confidence is not None and confidence < MIN_CONFIDENCE:
             # Not sure it heard right: never sent as is, but the mod can show
             # it in the box (unsent) for the person to send or clear.
             unsure = accept(text, None, MIN_CHARS, MIN_CONFIDENCE)
-            log.info("Unsure (confidence %.2f < %.2f): %r", confidence, MIN_CONFIDENCE, text)
+            log.info("Unsure (confidence %.2f < %.2f, %d chars)", confidence, MIN_CONFIDENCE, len(text))
+            command = voice_command(unsure) if unsure else None
+            if command is not None:
+                # Muting is safe to act on even when unsure.
+                self.out.event({"type": "partial", "text": ""})
+                self.state.set_listening(command == "on", "voice command")
+                return
             self.out.event({"type": "unsure", "text": unsure} if unsure else {"type": "partial", "text": ""})
             return
         cleaned = accept(text, confidence, MIN_CHARS, MIN_CONFIDENCE)
@@ -97,7 +103,7 @@ class Listener:
             # Its live words may be showing in the prompt box; take them away.
             self.out.event({"type": "partial", "text": ""})
             return
-        self.out.say(f"Heard: {cleaned!r}")
+        log.debug("Heard: %r", cleaned)
         command = voice_command(cleaned)
         if command is not None:
             self.out.event({"type": "partial", "text": ""})

@@ -55,6 +55,9 @@ def build_live_options(
 def build_client_options() -> DeepgramClientOptions:
     """Keepalive on: gated audio (muted or paused) would otherwise leave the
     stream idle and Deepgram would close it."""
+    # Leave the SDK's `verbose` log level at its default (WARNING): at INFO or
+    # DEBUG it logs request headers, which carry the API key, and its logger
+    # reaches listen.log through the root logger.
     return DeepgramClientOptions(options={"keepalive": "true"})
 
 
@@ -143,7 +146,8 @@ class DeepgramSTT:
             return
         # Conservative: the weakest result sets the confidence.
         confidence = min(w["confidence"] for w in flushed)
-        log.info("STT UtteranceEnd firing: %r (confidence=%.2f)", text, confidence)
+        log.info("STT UtteranceEnd firing: %d chars (confidence=%.2f)", len(text), confidence)
+        log.debug("STT text: %r", text)
         await self._on_utterance_full(text, confidence)
 
     async def handle_close(self, reason="") -> None:

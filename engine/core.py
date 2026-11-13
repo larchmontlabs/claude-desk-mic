@@ -298,11 +298,14 @@ def accept(text: str, confidence: float | None, min_chars: int, min_conf: float)
     """Return the cleaned text, or None when the utterance is dropped.
     confidence=None skips the confidence check (Whisper has none)."""
     if confidence is not None and confidence < min_conf:
-        log.info("Dropped (confidence %.2f < %.2f): %r", confidence, min_conf, text)
+        # What was said stays out of INFO, which listen.log keeps.
+        log.info("Dropped (confidence %.2f < %.2f, %d chars)", confidence, min_conf, len(text))
+        log.debug("Dropped text: %r", text)
         return None
     text = strip_fillers(text)
     if len(text) < min_chars:
-        log.info("Dropped (too short, %d < %d chars): %r", len(text), min_chars, text)
+        log.info("Dropped (too short, %d < %d chars)", len(text), min_chars)
+        log.debug("Dropped text: %r", text)
         return None
     return text
 

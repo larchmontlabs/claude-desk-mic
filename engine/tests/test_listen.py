@@ -552,3 +552,25 @@ def test_a_voice_command_clears_the_live_words():
     asyncio.run(listener.on_utterance_full("mic off", 0.9))
     partials = [e for e in _lines(stdout) if e["type"] == "partial"]
     assert partials == [{"type": "partial", "text": ""}]
+
+
+def test_no_speech_text_reaches_the_info_log(caplog):
+    """listen.log keeps INFO and up; what was said must not be in it."""
+    import logging
+
+    caplog.set_level(logging.INFO)
+    listener, state, _, _ = _listener()
+    asyncio.run(listener.on_utterance_full("private words one", 0.9))
+    asyncio.run(listener.on_utterance_full("private words two", 0.3))
+    asyncio.run(listener.on_utterance_full("pr", 0.9))
+    state.listening = False
+    asyncio.run(listener.on_utterance_full("private words three", 0.9))
+    info = [r.getMessage() for r in caplog.records if r.levelno >= logging.INFO]
+    assert info and not any("private" in m or "'pr'" in m for m in info)
+
+
+def test_a_low_confidence_mute_command_still_mutes():
+    listener, state, stdout, _ = _listener()
+    asyncio.run(listener.on_utterance_full("mic off", 0.3))
+    assert state.listening is False
+    assert {"type": "unsure", "text": "mic off"} not in _lines(stdout)

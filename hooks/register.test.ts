@@ -878,7 +878,10 @@ test('text typed into the box is not overwritten by live words', { options: { en
   await say(r, PARTIAL('half a'))
   r.draft = 'typed by hand'
   await say(r, PARTIAL('half a sentence'))
-  expect(r.draft).toBe('typed by hand half a sentence')
+  // Typing during live words pauses them, so no keystroke is overwritten.
+  expect(r.draft).toBe('typed by hand')
+  await say(r, UTTER('half a sentence done'))
+  expect(r.draft).toBe('typed by hand half a sentence done')
 })
 
 
@@ -957,4 +960,113 @@ test('a subagent turn is not the one "stop" ends', { options: { engine: 'whisper
   await $.turn.start({ text: 'sub', turnId: 'sub1', agentId: 'a1' })
   await say(r, UTTER('cancel'))
   expect(r.aborts).toEqual(['main1'])
+})
+
+// ---- review fixes: a slow box, stop words, unsure ------------------------
+test('a slow box does not double text across sentences', { options: { engine: 'whisper', useWakeWord: false } }, async ($, on) => {
+  const r = rig(on, { staleReads: true })
+  await begin($)
+  await micOn($, r)
+  await say(r, PARTIAL('list the'))
+  await say(r, PARTIAL('list the PR'))
+  await say(r, UTTER('list the PRs'))
+  await say(r, PARTIAL('and the'))
+  await say(r, PARTIAL('and the stale'))
+  await say(r, UTTER('and the stale ones'))
+  expect(r.draft).toBe('list the PRs and the stale ones')
+})
+
+test('a slow box is still cleared after a send', { options: { engine: 'whisper', useWakeWord: false } }, async ($, on) => {
+  const r = rig(on, { staleReads: true })
+  await begin($)
+  await micOn($, r)
+  await say(r, PARTIAL('list'))
+  await say(r, PARTIAL('list the PRs'))
+  await say(r, UTTER('list the PRs send it'))
+  expect(r.submits.map(s => s.text)).toEqual(['list the PRs'])
+  expect(r.draft).toBe('')
+})
+
+test('mic off takes live words out of the box', { options: { engine: 'whisper', useWakeWord: false } }, async ($, on) => {
+  const r = rig(on)
+  await begin($)
+  await micOn($, r)
+  await say(r, PARTIAL('half a sent'))
+  await mic($, 'off')
+  expect(r.draft).toBe('')
+})
+
+test('an unsure stop word stops nothing', { options: { engine: 'whisper', useWakeWord: false } }, async ($, on) => {
+  const r = rig(on)
+  await begin($)
+  await micOn($, r)
+  await $.turn.start({ text: 'list PRs', turnId: 't9' })
+  await say(r, UNSURE('wait'))
+  expect(r.aborts).toEqual([])
+})
+
+test('a slow box does not resend the last prompt (pause mode)', { options: { engine: 'whisper', useWakeWord: false, sendMode: 'pause' } }, async ($, on) => {
+  const r = rig(on, { staleReads: true })
+  await begin($)
+  await micOn($, r)
+  await say(r, PARTIAL('list the'))
+  await say(r, PARTIAL('list the PRs'))
+  await say(r, UTTER('list the PRs'))
+  await say(r, PARTIAL('run the'))
+  await say(r, PARTIAL('run the tests'))
+  await say(r, UTTER('run the tests'))
+  expect(r.submits.map(s => s.text)).toEqual(['list the PRs', 'run the tests'])
+})
+
+test('a slow box does not resend the last prompt (word mode)', { options: { engine: 'whisper' } }, async ($, on) => {
+  const r = rig(on, { staleReads: true })
+  await begin($)
+  await micOn($, r)
+  await say(r, PARTIAL('Claude, list'))
+  await say(r, PARTIAL('Claude, list the PRs'))
+  await say(r, UTTER('Claude, list the PRs, send it'))
+  await say(r, PARTIAL('Claude, run'))
+  await say(r, PARTIAL('Claude, run the tests'))
+  await say(r, UTTER('Claude, run the tests, send it'))
+  expect(r.submits.map(s => s.text)).toEqual(['list the PRs', 'run the tests'])
+})
+
+test('a bare stop works while a reply is running, even right after a send', { options: { engine: 'whisper' } }, async ($, on) => {
+  const r = rig(on)
+  await begin($)
+  await micOn($, r)
+  await say(r, UTTER('Claude, delete the old branches, send it'))
+  await $.turn.start({ text: 'delete the old branches', turnId: 't5' })
+  await say(r, UTTER('stop'))
+  expect(r.aborts).toEqual(['t5'])
+})
+
+test('a stop word says when a dictated prompt is still queued', { options: { engine: 'whisper', useWakeWord: false } }, async ($, on) => {
+  const pending = deferred<{ text: string }>()
+  const r = rig(on, { submit: () => pending.promise })
+  await begin($)
+  await micOn($, r)
+  await $.turn.start({ text: 'first', turnId: 't1' })
+  await say(r, UTTER('deploy it send it'))
+  await say(r, UTTER('stop'))
+  expect(r.aborts).toEqual(['t1'])
+  expect(r.toasts.some(t => t.includes('still queued'))).toBe(true)
+  pending.resolve({ text: 'deploy it' })
+})
+
+test('an unsure sentence with no send word gets no "not sent" toast', { options: { engine: 'whisper', useWakeWord: false } }, async ($, on) => {
+  const r = rig(on)
+  await begin($)
+  await micOn($, r)
+  await say(r, UNSURE('list the PRs'))
+  expect(r.draft).toBe('list the PRs')
+  expect(r.toasts.some(t => t.includes('not sent'))).toBe(false)
+})
+
+test('the env key is not in the listener argv', { options: { engine: 'deepgram' } }, async ($, on) => {
+  const r = rig(on, { env: { DEEPGRAM_API_KEY: 'env-key' } })
+  await begin($)
+  await mic($)
+  await until(() => r.listeners.length === 1, 'the listener spawn')
+  expect(r.spawns[0]!.argv.join(' ')).not.toContain('env-key')
 })

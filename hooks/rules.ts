@@ -107,6 +107,13 @@ export function rulesFrom(options: Readonly<Record<string, unknown>>): Rules {
   return { mode, sendWords, stopWords, useWakeWord, wakeWords }
 }
 
+/** Whether the sentence is a stop word on its own, with or without a wake
+ *  word in front, whatever the awake state. */
+export function stopWordSaid(text: string, rules: Rules): boolean {
+  const rest = rules.useWakeWord ? afterWakeWord(text, rules.wakeWords) : undefined
+  return isStopWord(rest ?? text, rules.stopWords)
+}
+
 /** True only when the whole sentence is a stop word ("Stop.", "hold on"), as
  *  on the phone bridge: "stop the server" is a request, not a stop. */
 function isStopWord(text: string, words: readonly string[]): boolean {

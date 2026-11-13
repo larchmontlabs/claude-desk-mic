@@ -69,11 +69,17 @@ def read_stdin_text(stream):
     return stream.read().decode("utf-8")
 
 
+class PlayerStopped(Exception):
+    """The player was killed (the person said stop): read nothing more."""
+
+
 def _run(argv, data=None):
+    """Runs argv to the end; returns its exit code (negative: killed by a signal)."""
     global _child
     _child = subprocess.Popen(argv, stdin=subprocess.PIPE if data is not None else None)
     try:
         _child.communicate(data)
+        return _child.returncode
     finally:
         _child = None
 
@@ -96,7 +102,10 @@ def _play(path):
     argv = pick_player(sys.platform, shutil.which("ffplay"))
     if argv is None:
         raise RuntimeError("no audio player")
-    _run(argv + [path])
+    code = _run(argv + [path])
+    # On macOS a stop kills the player, not this process: don't start the next piece.
+    if code is not None and code < 0:
+        raise PlayerStopped()
 
 
 def split_pieces(text, max_chars=PIECE_CHARS):
@@ -133,16 +142,19 @@ def split_pieces(text, max_chars=PIECE_CHARS):
     return pieces
 
 
-def _synth_pieces(synth, pieces, voice):
-    """Make each piece's audio in order on a thread. Returns (paths, ready):
-    ready[i] is set once piece i is made; paths[i] is its file, or None if it
-    failed (and nothing after it is made)."""
+def _synth_pieces(synth, pieces, voice, folder, stop):
+    """Make each piece's audio in order on a thread, into files in `folder`.
+    Returns (paths, ready): ready[i] is set once piece i is made; paths[i] is
+    its file, or None if it failed (and nothing after it is made). Setting
+    `stop` ends the work; a file made after that is removed at once."""
     paths = [None] * len(pieces)
     ready = [threading.Event() for _ in pieces]
 
     def work():
         for i, piece in enumerate(pieces):
-            fd, out_path = tempfile.mkstemp(suffix=".mp3")
+            if stop.is_set():
+                break
+            fd, out_path = tempfile.mkstemp(suffix=".mp3", dir=folder)
             os.close(fd)
             try:
                 synth(piece, voice, out_path)
@@ -150,15 +162,22 @@ def _synth_pieces(synth, pieces, voice):
                     paths[i] = out_path
             except Exception:
                 pass
-            if paths[i] is None:
+            if paths[i] is None or stop.is_set():
+                paths[i] = None
                 _remove(out_path)
-                for event in ready[i:]:
-                    event.set()
-                return
+                break
             ready[i].set()
+        for event in ready:
+            event.set()
 
     threading.Thread(target=work, daemon=True).start()
     return paths, ready
+
+
+def _sweep(folder):
+    """Remove pieces a killed run left behind (one reading runs at a time)."""
+    for old in Path(folder).glob("*"):
+        _remove(old)
 
 
 def _remove(path):
@@ -183,15 +202,23 @@ def speak(text, voice, backend, flag, *, synth=None, player=None, os_speak=None,
     try:
         if backend == "edge":
             pieces = split_pieces(text, piece_chars)
-            paths, ready = _synth_pieces(synth, pieces, voice)
+            folder = flag.parent / "speech"
+            folder.mkdir(parents=True, exist_ok=True)
+            _sweep(folder)
+            stop = threading.Event()
+            paths, ready = _synth_pieces(synth, pieces, voice, folder, stop)
             try:
                 for i in range(len(pieces)):
                     # Each piece gets the wait: no audio within it means the OS voice.
                     if not ready[i].wait(wait_s) or paths[i] is None:
+                        stop.set()
                         os_speak(os_backend(platform), " ".join(pieces[i:]))
                         return
                     player(paths[i])
+            except PlayerStopped:
+                return
             finally:
+                stop.set()
                 for i, path in enumerate(paths):
                     if path is not None and ready[i].is_set():
                         _remove(path)

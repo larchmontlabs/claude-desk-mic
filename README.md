@@ -29,12 +29,14 @@ All settings are on the install screen and in `/config`. `/mic` takes only `on`,
 
 With the `deepgram` engine, desk-mic streams your mic audio to Deepgram's cloud while the mic is on. That is all audio, not only the sentences that start with the wake word. Muting stops it. The `whisper` engine keeps all audio on this computer.
 
+desk-mic keeps two small files in `~/.claude-desk-mic`: `listen.log`, the listener's log from its last run, and `last-stop.txt`, why the mic last stopped. Neither holds what you said or your key: they record events, sentence lengths and confidence scores only.
+
 
 ## How it works
 
 Say "Claude, what time is it, send it" and the prompt `what time is it` is sent. The wake word starts a prompt and the send word sends it. Both are settings: turn the wake word off, change either word, or switch to `pause` mode, where each sentence is sent when you stop talking. To mute, press the mute key, or say "stop listening" or "mic off" on its own, without the wake word in front. A muted mic hears nothing, so it cannot hear you ask it to unmute: press the mute key again, or run `/mic off` and then `/mic on`.
 
-While you talk, the words show up in the prompt box. "Claude, scratch that" clears the box. Say a stop word on its own ("stop", "cancel", "wait", "hold on" or "never mind") to end Claude's running reply and stop it reading aloud. Stop words follow the wake word: say "Claude, stop", or just "stop" within 30 seconds of the last thing you said. If the speech engine is not sure it heard you right, the sentence waits in the box unsent until you say the send word.
+While you talk, the words show up in the prompt box. "Claude, scratch that" clears the box. Say a stop word on its own ("stop", "cancel", "wait", "hold on" or "never mind") to end Claude's running reply and stop it reading aloud. While Claude is replying or reading aloud, a stop word on its own always works. Otherwise it follows the wake word: say "Claude, stop". With the wake word turned off, anyone near the mic who says a stop word on its own stops Claude's reply, so pick less common stop words if that is a risk. A stop cannot take back a dictated prompt that is waiting for Claude to finish; it is still sent. If the speech engine is not sure it heard you right, the sentence waits in the box unsent until you say the send word.
 
 With `speakBack` on, Claude's replies are read aloud while the mic is on. The voice is a natural one from edge-tts, and falls back to the system voice if it cannot be reached. Sending a new prompt stops the reply that is being read.
 
